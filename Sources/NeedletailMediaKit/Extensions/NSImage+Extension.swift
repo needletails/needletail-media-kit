@@ -104,7 +104,7 @@ extension NSImage {
             bitmapInfo: bitmapInfo.rawValue
         )
         
-        guard let bitmapContext = context, let maskImage = self._cgImage else {
+        guard let bitmapContext = context, let maskImage = self.cgImage else {
             return nil
         }
         
