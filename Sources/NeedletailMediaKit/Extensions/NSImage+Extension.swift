@@ -80,7 +80,7 @@ extension NSImage {
         return view.toImage()
     }
     
-    public var cgImage: CGImage? {
+    public var _cgImage: CGImage? {
         var imageRect = CGRect(x: 0, y: 0, width: self.size.width, height: self.size.height)
         let imageRef = self.cgImage(forProposedRect: &imageRect, context: nil, hints: nil)
         return imageRef
@@ -104,7 +104,7 @@ extension NSImage {
             bitmapInfo: bitmapInfo.rawValue
         )
         
-        guard let bitmapContext = context, let maskImage = self.cgImage else {
+        guard let bitmapContext = context, let maskImage = self._cgImage else {
             return nil
         }
         
@@ -126,8 +126,8 @@ extension NSImage {
             options: CGGradientDrawingOptions(rawValue: UInt32(0))
         )
         
-        if let cImage = bitmapContext.makeImage() {
-            let coloredImage = NSImage(cgImage: cImage, size: bounds.size)
+        if let cgImage = bitmapContext.makeImage() {
+            let coloredImage = NSImage(cgImage: cgImage, size: bounds.size)
             return coloredImage
         }
         
