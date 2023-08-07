@@ -80,7 +80,7 @@ extension NSImage {
         return view.toImage()
     }
     
-    public var _cgImage: CGImage? {
+    public var cgImage: CGImage? {
         var imageRect = CGRect(x: 0, y: 0, width: self.size.width, height: self.size.height)
         let imageRef = self.cgImage(forProposedRect: &imageRect, context: nil, hints: nil)
         return imageRef
@@ -204,6 +204,34 @@ extension NSImage {
         NSGraphicsContext.restoreGraphicsState()
         
         return bitmap.representation(using: .jpeg, properties: [:])
+    }
+}
+
+extension NSImage {
+    public func roundCorners(withRadius radius: CGFloat) -> NSImage {
+        let rect = NSRect(origin: NSPoint.zero, size: size)
+        if
+            let cgImage = self.cgImage,
+            let context = CGContext(data: nil,
+                                    width: Int(size.width),
+                                    height: Int(size.height),
+                                    bitsPerComponent: 8,
+                                    bytesPerRow: 4 * Int(size.width),
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue) {
+            context.beginPath()
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            context.closePath()
+            context.clip()
+            context.draw(cgImage, in: rect)
+            
+            
+            if let composedImage = context.makeImage() {
+                return NSImage(cgImage: composedImage, size: size)
+            }
+        }
+        
+        return self
     }
 }
 
