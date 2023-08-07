@@ -9,7 +9,7 @@
 import Cocoa
 
 extension NSView {
-    func toImage() -> NSImage? {
+    public func toImage() -> NSImage? {
         guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
             return nil
         }
@@ -22,7 +22,7 @@ extension NSView {
 }
 
 extension NSImage {
-    func resize(w: CGFloat, h: CGFloat) -> NSImage {
+    public func resize(w: CGFloat, h: CGFloat) -> NSImage {
         let destSize = NSMakeSize(CGFloat(w), CGFloat(h))
         
         let imageRepresentation = NSBitmapImageRep(
@@ -62,7 +62,7 @@ extension NSImage {
         return newImage
     }
     
-    func merge(with other: NSImage?) -> NSImage? {
+    public func merge(with other: NSImage?) -> NSImage? {
         guard let otherImage = other else {
             return nil
         }
@@ -80,13 +80,13 @@ extension NSImage {
         return view.toImage()
     }
     
-    var cgImage: CGImage? {
+    public var cgImage: CGImage? {
         var imageRect = CGRect(x: 0, y: 0, width: self.size.width, height: self.size.height)
         let imageRef = self.cgImage(forProposedRect: &imageRect, context: nil, hints: nil)
         return imageRef
     }
     
-    func maskWithGradient(start: NSColor, end: NSColor) -> NSImage? {
+    public func maskWithGradient(start: NSColor, end: NSColor) -> NSImage? {
         let width = self.size.width
         let height = self.size.height
         let bounds = NSRect(x: 0, y: 0, width: width, height: height)
@@ -136,7 +136,7 @@ extension NSImage {
 }
 
 extension NSImage {
-    func pngData(
+    public func pngData(
         size: CGSize,
         imageInterpolation: NSImageInterpolation = .high
     ) -> Data? {
@@ -171,7 +171,7 @@ extension NSImage {
         return bitmap.representation(using: .png, properties: [:])
     }
     
-    func jpegData(
+    public func jpegData(
         size: CGSize,
         imageInterpolation: NSImageInterpolation = .high
     ) -> Data? {
