@@ -11,25 +11,10 @@ import CoreImage
 
 fileprivate let kernelLength = 51
 
-@available(iOS 13, *)
-public final class BlurProccessor {
+@available(iOS 16, macOS 13, *)
+public actor BlurProcessor {
     
-    public static var sharedInstance: BlurProccessor?
-    
-    public class var shared: BlurProccessor {
-        guard let sharedInstance = self.sharedInstance else {
-            let sharedInstance = BlurProccessor()
-            self.sharedInstance = sharedInstance
-            return sharedInstance
-        }
-        return sharedInstance
-    }
-    
-    public class func destroySharedManager() {
-        sharedInstance = nil
-    }
-    
-    private init () {}
+    public init () {}
     
     private var cgImage: CGImage?
     
@@ -132,7 +117,7 @@ public final class BlurProccessor {
                                            rounding: vDSP.RoundingMode.towardNearestInteger)
     }()
     
-    @available(iOS 14.0, *)
+    @available(iOS 16.0, macOS 13, *)
     public func blurBackground(_ pixels: CVPixelBuffer, ciContext: CIContext) async throws -> (CIImage, CVPixelBuffer) {
         
         guard let image = try await ImageProcessor.createCGImage(from: pixels, for: CGSize(width: pixels.width, height: pixels.height), desiredSize: CGSize(width: pixels.width, height: pixels.height), isThumbnail: false) else {
@@ -149,7 +134,7 @@ public final class BlurProccessor {
             )
     }
     
-    @available(iOS 14.0, *)
+    @available(iOS 16.0, macOS 13, *)
     public func setBlur(with
                          mode: ConvolutionModes,
                          cgimage: CGImage,
@@ -166,7 +151,7 @@ public final class BlurProccessor {
         return (ciImage, buffer)
     }
     
-    @available(iOS 14.0, *)
+    @available(iOS 16.0, macOS 13, *)
     private func applyBlur(_ cgimage: CGImage, sourceBuffer: vImage_Buffer, format: vImage_CGImageFormat) async throws -> CGImage {
         destinationBuffer = try vImage_Buffer(width: Int(sourceBuffer.width),
                                               height: Int(sourceBuffer.height),
@@ -191,7 +176,7 @@ public final class BlurProccessor {
     }
     
     
-    @available(iOS 14.0, *)
+    @available(iOS 16.0, macOS 13, *)
     private func hann1D(_ cgImage: CGImage, sourceBuffer: vImage_Buffer, format: vImage_CGImageFormat) {
         var sourceBuffer = sourceBuffer
         

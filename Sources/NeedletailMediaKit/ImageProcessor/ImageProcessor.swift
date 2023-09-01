@@ -20,7 +20,7 @@ public enum ImageErrors: Error {
 }
 
 
-public class ImageProcessor {
+public actor ImageProcessor {
     
     public static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     
@@ -266,6 +266,7 @@ public class ImageProcessor {
     }
     
 #if os(iOS)
+    @MainActor
     public static func fillParent(with aspectRatio: CGFloat, from imageData: UIImage) -> CGSize {
         if imageData.size.height > imageData.size.width {
             let width = UIScreen.main.bounds.size.width
@@ -278,6 +279,7 @@ public class ImageProcessor {
         }
     }
 #else
+    @MainActor
     public static func fillParent(with aspectRatio: CGFloat, from imageData: NSImage) -> CGSize {
         guard let frame = NSScreen.main?.frame else { return CGSize() }
         if imageData.size.height > imageData.size.width {
