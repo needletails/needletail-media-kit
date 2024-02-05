@@ -33,14 +33,16 @@ public actor ImageProcessor {
         ]
     ] as? CFDictionary
     
-#if os(iOS)
+#if os(iOS) || os(macOS)
     public static func resize(_ imageData: Data, to desiredSize: CGSize, isThumbnail: Bool) async throws -> CGImage {
         guard let ciimage = CIImage(data: imageData) else { throw ImageErrors.imageError }
         guard let pb = await recreatePixelBuffer(from: ciimage) else { throw ImageErrors.imageError }
         guard let cgImage = try await createCGImage(from: pb, for: ciimage.extent.size, desiredSize: desiredSize, isThumbnail: isThumbnail) else { throw ImageErrors.imageError }
         return cgImage
     }
-#elseif os(macOS)
+#endif
+    
+#if os(macOS)
     public static func resize(_ imageData: NSImage, to desiredSize: CGSize, isThumbnail: Bool) async throws -> NSImage {
         guard let cgImage = imageData.cgImage else { throw ImageErrors.imageError }
         let ciimage = CIImage(cgImage: cgImage)
