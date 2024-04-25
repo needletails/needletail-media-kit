@@ -13,7 +13,7 @@ fileprivate let kernelLength = 51
 
 @available(iOS 16, macOS 13, *)
 public actor BlurProcessor {
-    
+    public let imageProcessor = ImageProcessor()
     public init () {}
     
     private var cgImage: CGImage?
@@ -120,7 +120,12 @@ public actor BlurProcessor {
     @available(iOS 16.0, macOS 13, *)
     public func blurBackground(_ pixels: CVPixelBuffer, ciContext: CIContext) async throws -> (CIImage, CVPixelBuffer) {
         
-        guard let image = try await ImageProcessor.createCGImage(from: pixels, for: CGSize(width: pixels.width, height: pixels.height), desiredSize: CGSize(width: pixels.width, height: pixels.height), isThumbnail: false) else {
+        guard let image = try await imageProcessor.createCGImage(
+            from: pixels,
+            for: CGSize(width: pixels.width, height: pixels.height),
+            desiredSize: CGSize(width: pixels.width, height: pixels.height),
+            isThumbnail: false
+        ) else {
             throw ImageErrors.cannotBlur
         }
 
@@ -145,7 +150,7 @@ public actor BlurProcessor {
         self.mode = mode
         let image = try await applyBlur(cgimage, sourceBuffer: sourceBuffer, format: format)
         let ciImage = CIImage(cgImage: image)
-        guard let buffer = await ImageProcessor.recreatePixelBuffer(from: ciImage) else {
+        guard let buffer = await imageProcessor.recreatePixelBuffer(from: ciImage, ciContext: ciContext) else {
             throw ImageErrors.cannotBlur
         }
         return (ciImage, buffer)

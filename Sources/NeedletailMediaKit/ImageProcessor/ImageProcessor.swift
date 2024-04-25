@@ -16,15 +16,15 @@ import Vision
 import CoreImage.CIFilterBuiltins
 
 public enum ImageErrors: Error {
-    case imageError, cannotGetSize, cannotBlur
+    case imageError, cannotGetSize, cannotBlur, imageDataNil, cannotCreateImage
 }
 
 
 public actor ImageProcessor {
     
-    public static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    public init() {}
     
-    private static let pixelAttributes = [
+    private let pixelAttributes = [
         kCVPixelBufferIOSurfacePropertiesKey: [
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
@@ -34,25 +34,25 @@ public actor ImageProcessor {
     ] as? CFDictionary
     
 #if os(iOS) || os(macOS)
-    public static func resize(_ imageData: Data, to desiredSize: CGSize, isThumbnail: Bool) async throws -> CGImage {
+    public func resize(_ imageData: Data, to desiredSize: CGSize, isThumbnail: Bool, ciContext: CIContext) async throws -> CGImage {
         guard let ciimage = CIImage(data: imageData) else { throw ImageErrors.imageError }
-        guard let pb = await recreatePixelBuffer(from: ciimage) else { throw ImageErrors.imageError }
+        guard let pb = await recreatePixelBuffer(from: ciimage, ciContext: ciContext) else { throw ImageErrors.imageError }
         guard let cgImage = try await createCGImage(from: pb, for: ciimage.extent.size, desiredSize: desiredSize, isThumbnail: isThumbnail) else { throw ImageErrors.imageError }
         return cgImage
     }
 #endif
     
 #if os(macOS)
-    public static func resize(_ imageData: NSImage, to desiredSize: CGSize, isThumbnail: Bool) async throws -> NSImage {
+    public func resize(_ imageData: NSImage, to desiredSize: CGSize, isThumbnail: Bool, ciContext: CIContext) async throws -> NSImage {
         guard let cgImage = imageData.cgImage else { throw ImageErrors.imageError }
         let ciimage = CIImage(cgImage: cgImage)
-        guard let pb = await recreatePixelBuffer(from: ciimage) else { throw ImageErrors.imageError }
+        guard let pb = await recreatePixelBuffer(from: ciimage, ciContext: ciContext) else { throw ImageErrors.imageError }
         guard let newCGImage = try await createCGImage(from: pb, for: imageData.size, desiredSize: desiredSize, isThumbnail: isThumbnail) else { throw ImageErrors.imageError }
         return NSImage(cgImage: newCGImage, size: CGSize(width: newCGImage.width, height: newCGImage.height))
     }
 #endif
     
-    public static func recreatePixelBuffer(from image: CIImage) async -> CVPixelBuffer? {
+    public func recreatePixelBuffer(from image: CIImage, ciContext: CIContext) async -> CVPixelBuffer? {
         var pixelBuffer: CVPixelBuffer? = nil
         
         CVPixelBufferCreate(
@@ -68,7 +68,7 @@ public actor ImageProcessor {
         return pixelBuffer
     }
     
-    public static func createCGImage(
+    public func createCGImage(
         from pixelBuffer: CVPixelBuffer,
         for size: CGSize,
         desiredSize: CGSize,
@@ -114,20 +114,17 @@ public actor ImageProcessor {
             throw vImage.Error(vImageError: error)
         }
         
-        var resizedImage: CGImage?
-        // Center the image
-        resizedImage = try destinationBuffer.createCGImage(format: format)
-        
+        var resizedImage = try destinationBuffer.createCGImage(format: format)
+
         defer {
             sourceBuffer.free()
             destinationBuffer.free()
         }
-        guard let resizedImage = resizedImage else { return nil }
         
         return resizedImage
     }
     
-    public static func getAspectRatio(size: CGSize) -> CGFloat {
+    public func getAspectRatio(size: CGSize) -> CGFloat {
         if size.width > size.height {
             return size.width / size.height
         } else {
@@ -135,8 +132,7 @@ public actor ImageProcessor {
         }
     }
     
-    @MainActor
-    public static func getNewSize(data: Data? = nil, size: CGSize? = nil, desiredSize: CGSize? = nil, isThumbnail: Bool = false) throws -> CGSize {
+    public func getNewSize(data: Data? = nil, size: CGSize? = nil, desiredSize: CGSize? = nil, isThumbnail: Bool = false) async throws -> CGSize {
         var size = size
         var desiredSize = desiredSize
         if size == nil, let data = data {
@@ -162,7 +158,8 @@ public actor ImageProcessor {
         } else {
             let width = desiredSize.height * aspectRatio
 #if os(iOS)
-            if width > UIScreen.main.bounds.size.width {
+            let screenWidth = try await Task { @MainActor in UIScreen.main.bounds.size.width }.value
+            if width > screenWidth {
                 let width = desiredSize.width
                 let height = desiredSize.width / aspectRatio
                 return CGSize(width: width, height: height)
@@ -172,7 +169,8 @@ public actor ImageProcessor {
                 return CGSize(width: width, height: desiredSize.height)
             }
 #elseif os(macOS)
-            if width > NSApplication.shared.windows.first?.frame.width ?? 300{
+            let windowWidth = try await Task { @MainActor in NSApplication.shared.windows.first?.frame.width }.value
+            if width > windowWidth ?? 300 {
                 let width = desiredSize.width
                 let height = desiredSize.width / aspectRatio
                 return CGSize(width: width, height: height)
@@ -186,9 +184,10 @@ public actor ImageProcessor {
     }
     
     
-    public static func processImages(_
+    public func processImages(_
                                      pixelBuffer: CVPixelBuffer,
-                                     backgroundBuffer: CVPixelBuffer
+                                     backgroundBuffer: CVPixelBuffer,
+                                        ciContext: CIContext
     ) async throws -> ImageObject? {
         // Create request handler
         let mask: VNPixelBufferObservation = try autoreleasepool {
@@ -209,7 +208,8 @@ public actor ImageProcessor {
         return try await blendImages(
             foregroundBuffer: pixelBuffer,
             maskedBuffer: mask.pixelBuffer,
-            backgroundBuffer: backgroundBuffer
+            backgroundBuffer: backgroundBuffer,
+            ciContext: ciContext
         )
     }
     
@@ -218,15 +218,16 @@ public actor ImageProcessor {
         var image: CIImage?
     }
     
-    public static func blendImages(
+    public func blendImages(
         foregroundBuffer: CVPixelBuffer,
         maskedBuffer: CVPixelBuffer,
-        backgroundBuffer: CVPixelBuffer
+        backgroundBuffer: CVPixelBuffer,
+        ciContext: CIContext
     ) async throws -> ImageObject? {
         
-        guard let newForegroundBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: foregroundBuffer)) else { return nil }
-        guard let newMaskedBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: maskedBuffer)) else { return nil }
-        guard let newBackgroundBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: backgroundBuffer)) else { return nil }
+        guard let newForegroundBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: foregroundBuffer), ciContext: ciContext) else { return nil }
+        guard let newMaskedBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: maskedBuffer), ciContext: ciContext) else { return nil }
+        guard let newBackgroundBuffer = await recreatePixelBuffer(from: CIImage(cvPixelBuffer: backgroundBuffer), ciContext: ciContext) else { return nil }
         
         let size = CGSize(
             width: newForegroundBuffer.width,
@@ -262,14 +263,14 @@ public actor ImageProcessor {
             return image!
         }
         //        create pixel buffer
-        let buffer = await recreatePixelBuffer(from: image)
+        let buffer = await recreatePixelBuffer(from: image, ciContext: ciContext)
         return ImageObject(buffer: buffer, image: image)
         
     }
     
 #if os(iOS)
     @MainActor
-    public static func fillParent(with aspectRatio: CGFloat, from imageData: UIImage) -> CGSize {
+    public func fillParent(with aspectRatio: CGFloat, from imageData: UIImage) -> CGSize {
         if imageData.size.height > imageData.size.width {
             let width = UIScreen.main.bounds.size.width
             let height = UIScreen.main.bounds.size.width * aspectRatio
@@ -282,7 +283,7 @@ public actor ImageProcessor {
     }
 #else
     @MainActor
-    public static func fillParent(with aspectRatio: CGFloat, from imageData: NSImage) -> CGSize {
+    public func fillParent(with aspectRatio: CGFloat, from imageData: NSImage) -> CGSize {
         guard let frame = NSScreen.main?.frame else { return CGSize() }
         if imageData.size.height > imageData.size.width {
             let width = frame.width
@@ -306,5 +307,78 @@ public actor ImageProcessor {
     group.wait()
     
     return result!
+}
+#endif
+
+#if os(iOS) || os(macOS)
+extension ImageProcessor {
+    public func resize(
+        cvImageBuffer: CVImageBuffer,
+        to desiredSize: CGSize,
+        isThumbnail: Bool,
+        ciContext: CIContext
+    ) async throws -> CGImage {
+        let ciimage = CIImage(cvImageBuffer: cvImageBuffer)
+        guard let pb = await recreatePixelBuffer(
+            from: ciimage,
+            ciContext: ciContext
+        ) else { throw ImageErrors.imageError }
+        guard let cgImage = try await createCGImage(
+            from: pb,
+            for: ciimage.extent.size,
+            desiredSize: desiredSize,
+            isThumbnail: isThumbnail
+        ) else { throw ImageErrors.imageError }
+        return cgImage
+    }
+    
+    public func resize(
+        cvPixelBuffer: CVPixelBuffer,
+        to desiredSize: CGSize,
+        isThumbnail: Bool,
+        ciContext: CIContext
+    ) async throws -> CGImage {
+        let ciimage = CIImage(cvPixelBuffer: cvPixelBuffer)
+        guard let pb = await recreatePixelBuffer(
+            from: ciimage,
+            ciContext: ciContext
+        ) else { throw ImageErrors.imageError }
+        guard let cgImage = try await createCGImage(
+            from: pb,
+            for: ciimage.extent.size,
+            desiredSize: desiredSize,
+            isThumbnail: isThumbnail
+        ) else { throw ImageErrors.imageError }
+        return cgImage
+    }
+
+    public func createSampleBuffer(from pixelBuffer: CVPixelBuffer, time: CMTime) -> CMSampleBuffer? {
+        var sampleBuffer: CMSampleBuffer?
+        
+        // Create a format description for the pixel buffer
+        var formatDescription: CMFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        
+        // Create a CMSampleTimingInfo
+        var timingInfo = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
+        guard let formatDescription = formatDescription else { fatalError() }
+        // Create a CMSampleBuffer
+        CMSampleBufferCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            dataReady: true, 
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: formatDescription,
+            sampleTiming: &timingInfo,
+            sampleBufferOut: &sampleBuffer
+        )
+        
+        return sampleBuffer
+    }
 }
 #endif

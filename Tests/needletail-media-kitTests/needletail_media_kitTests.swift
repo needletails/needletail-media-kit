@@ -1,3 +1,4 @@
+#if os(macOS) || os(iOS)
 import XCTest
 @testable import NeedletailMediaKit
 
@@ -10,3 +11,4 @@ final class needletail_media_kitTests: XCTestCase {
         // https://developer.apple.com/documentation/xctest/defining_test_cases_and_test_methods
     }
 }
+#endif
