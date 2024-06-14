@@ -29,7 +29,7 @@ fileprivate let kernelLength = 51
 @ImageProcessorActor
 public struct ImageProcessor {
     
-
+    nonisolated(unsafe) public init() {}
     
     private var cgImage: CGImage?
     private var mode = ConvolutionModes.hann1D
@@ -92,9 +92,6 @@ public struct ImageProcessor {
                                            integerType: Int16.self,
                                            rounding: vDSP.RoundingMode.towardNearestInteger)
     }()
-    
-    public init() {}
-    
     
 #if os(iOS) || os(macOS)
     public func resize(_ imageData: Data, to desiredSize: CGSize, isThumbnail: Bool, ciContext: CIContext) async throws -> CGImage {
