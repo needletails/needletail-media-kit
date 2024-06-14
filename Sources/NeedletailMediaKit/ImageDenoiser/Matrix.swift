@@ -9,8 +9,13 @@
 
 import Accelerate
 
+@globalActor public actor MatrixActor {
+    public static let shared = MatrixActor()
+    public init() {}
+}
+
 /// A basic single-precision matrix object.
-public struct Matrix {
+public struct Matrix: Sendable {
     /// The number of rows in the matrix.
     public let rowCount: Int
     
@@ -36,7 +41,7 @@ public struct Matrix {
     private var dataReference: MatrixDataReference
     
     /// An object that wraps the structure's data and provides deallocation when the code releases the structure.
-    private class MatrixDataReference {
+    private final class MatrixDataReference: @unchecked Sendable {
         var data: UnsafeMutableBufferPointer<Float>
         
         init(data: UnsafeMutableBufferPointer<Float>) {
@@ -49,12 +54,14 @@ public struct Matrix {
     }
 }
 
+
+
 /// Extension to create a matrix from an image and an image from a matrix.
 extension Matrix {
     
     /// The 32-bit planar image format that the `Matrix` type uses to
     /// consume and produce `CGImage` instances.
-    private static var imageFormat = vImage_CGImageFormat(
+    @MatrixActor private static var imageFormat = vImage_CGImageFormat(
         bitsPerComponent: 32,
         bitsPerPixel: 32,
         colorSpace: CGColorSpaceCreateDeviceGray(),
@@ -65,7 +72,7 @@ extension Matrix {
     
     /// Converts the specified image to 32-bit planar and returns a new matrix
     /// that contains that image data.
-    public init?(cgImage: CGImage) {
+    @MatrixActor public init?(cgImage: CGImage) {
         
         self.init(rowCount: cgImage.height,
                   columnCount: cgImage.width)
@@ -90,7 +97,7 @@ extension Matrix {
     }
     
     /// Returns a 32-bit per pixel, grayscale `CGImage`instance of the matrix's data.
-    public var cgImage: CGImage? {
+    @MatrixActor public var cgImage: CGImage? {
         
         let tmpBuffer = vImage_Buffer(
             data: self.data.baseAddress!,
