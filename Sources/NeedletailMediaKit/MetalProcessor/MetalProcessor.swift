@@ -224,7 +224,7 @@ public actor MetalProcessor {
             rgbToYuvKernelPipeline = try createComputePipeline(device: device, shaderName: "rgbToYuv")
         }
         
-//         Set up a command buffer and encoder
+        //         Set up a command buffer and encoder
         guard let commandQueue = device.makeCommandQueue(),
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -256,7 +256,7 @@ public actor MetalProcessor {
         
         return (yTexture, uvTexture)
     }
-
+    
     public func createComputePipeline(device: MTLDevice, shaderName: String) throws -> MTLComputePipelineState {
         guard let shaderFunction = library.makeFunction(name: shaderName) else {
             throw MetalScalingErrors.shaderFunctionNotFound
@@ -271,10 +271,10 @@ public actor MetalProcessor {
     }
     
     public func createSize(
-                    for scaleMode: ScaleMode = .none,
-                    originalSize: CGSize,
-                    desiredSize: CGSize,
-                    aspectRatio: CGFloat = 0
+        for scaleMode: ScaleMode = .none,
+        originalSize: CGSize,
+        desiredSize: CGSize,
+        aspectRatio: CGFloat = 0
     ) async -> ScaledInfo {
         var size = CGSize()
         var scaleX: CGFloat = 1.0
@@ -343,7 +343,7 @@ public actor MetalProcessor {
         }
     }
     
-    #if canImport(WebRTC)
+#if canImport(WebRTC)
     public func createMetalImage(
         fromPixelBuffer pixelBuffer: CVPixelBuffer? = nil,
         fromI420Buffer i420: RTCI420Buffer? = nil,
@@ -382,7 +382,7 @@ public actor MetalProcessor {
             throw MetalScalingErrors.failedToCreateTexture
         }
     }
-    #endif
+#endif
     
     public func resizeImage(
         sourceTexture: MTLTexture,
@@ -561,7 +561,7 @@ extension MetalProcessor {
         
         return pixelBuffer
     }
-
+    
     
     ///Converts a YUV PixelBuffer to a YUV Texture and then outputs a new CVPixelBuffer from that YUV Texture that is properly formated.
     public func convertToPixelBuffer(
@@ -681,28 +681,28 @@ extension MetalProcessor {
     public func createPixelBuffer(ciImage: CIImage, ciContext: CIContext) -> CVPixelBuffer? {
         let attributes: [NSString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-                   kCVPixelBufferWidthKey: ciImage.extent.width,
-                   kCVPixelBufferHeightKey: ciImage.extent.height,
-                   kCVPixelBufferIOSurfacePropertiesKey: [:] // Empty dictionary for default properties
-               ]
+            kCVPixelBufferWidthKey: ciImage.extent.width,
+            kCVPixelBufferHeightKey: ciImage.extent.height,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] // Empty dictionary for default properties
+        ]
         
         
         var pixelBufferPool: CVPixelBufferPool?
         
         let pool = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pixelBufferPool)
-
-            var pixelBuffer: CVPixelBuffer?
-            let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool!, &pixelBuffer)
-
-            guard let unwrappedPixelBuffer = pixelBuffer, poolStatus == kCVReturnSuccess else {
-                print("Failed to create pixel buffer from pool. Status: \(poolStatus)")
-                return nil
-            }
-
-            ciContext.render(ciImage, to: unwrappedPixelBuffer)
-
-            return unwrappedPixelBuffer
+        
+        var pixelBuffer: CVPixelBuffer?
+        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool!, &pixelBuffer)
+        
+        guard let unwrappedPixelBuffer = pixelBuffer, poolStatus == kCVReturnSuccess else {
+            print("Failed to create pixel buffer from pool. Status: \(poolStatus)")
+            return nil
         }
+        
+        ciContext.render(ciImage, to: unwrappedPixelBuffer)
+        
+        return unwrappedPixelBuffer
+    }
     
     
 }
@@ -857,6 +857,7 @@ extension MetalProcessor {
         )
     }
     
+#if os(iOS)
     private func createTexture(fromImage: UIImage, device: MTLDevice) -> MTLTexture? {
         guard let cgImage = fromImage.cgImage else {
             return nil
@@ -899,15 +900,16 @@ extension MetalProcessor {
             destinationTextureInfo.scaleY = scaleInfo.scaleY
             return destinationTextureInfo
         }
+#endif
 }
 
 //extension MetalProcessor {
-//    
+//
 //    @available(iOS 15, *)
 //    @SegmentationActor struct SegementationRequest {
 //        static let request = VNGeneratePersonSegmentationRequest()
 //    }
-//    
+//
 //    @available(iOS 15, *)
 //    /// This method is used when an image has been selected for Virtual Background. We are using Vision.framework to get the person segmentation mask
 //    /// - Parameters:
@@ -930,7 +932,7 @@ extension MetalProcessor {
 //        let aspectRatio = await metalScaler.getAspectRatio(
 //            width: CGFloat(foregroundPixels.width),
 //            height: CGFloat(foregroundPixels.height))
-//        
+//
 //        let scaleInfo = await metalScaler.createSize(
 //            for: scaleMode,
 //            originalSize: CGSize(
@@ -941,14 +943,14 @@ extension MetalProcessor {
 //                height: bounds.height
 //            ),
 //            aspectRatio: aspectRatio)
-//        
+//
 //        var foregroundInfo = try await metalScaler.createMetalImage(
 //            fromPixelBuffer: foregroundPixels,
 //            parentBounds: bounds,
 //            scaleInfo: scaleInfo,
 //            aspectRatio: aspectRatio
 //        )
-//        
+//
 //        guard let foregroundImage = CGImage(
 //            width: foregroundInfo.texture.width,
 //            height: foregroundInfo.texture.height,
@@ -961,7 +963,7 @@ extension MetalProcessor {
 //            decode: nil,
 //            shouldInterpolate: true,
 //            intent: .defaultIntent) else { throw ACBClientErrors.imageCreationFailed }
-//        
+//
 //        let foregroundBounds = CGSize(width: foregroundInfo.texture.width, height: foregroundInfo.texture.height)
 //        // Create request handler
 //        let request = await SegementationRequest.request
@@ -970,18 +972,18 @@ extension MetalProcessor {
 //            cgImage: foregroundImage,
 //            orientation: .up,
 //            options: [.ciContext: ciContext])
-//        
+//
 //        try handler.perform([request])
-//        
+//
 //        guard let mask = request.results?.first else {
 //            throw ACBClientErrors.cannotProcessBackgroundImage
 //        }
-//        
+//
 //        let ciImage = CIImage(cvPixelBuffer: mask.pixelBuffer)
 //        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { throw ACBClientErrors.imageCreationFailed }
 //        let maskImage = UIImage(cgImage: cgImage)
-//        
-//        
+//
+//
 //        let maskAspectRatio = await metalScaler.getAspectRatio(width: CGFloat(foregroundImage.width), height: CGFloat(foregroundImage.height))
 //        let maskScaleInfo = await metalScaler.createSize(
 //            for: scaleMode,
@@ -993,14 +995,14 @@ extension MetalProcessor {
 //                height: foregroundImage.height
 //            ),
 //            aspectRatio: maskAspectRatio)
-//        
+//
 //        var maskInfo = try await metalScaler.resizeImage(
 //            image: maskImage,
 //            parentBounds: foregroundBounds,
 //            scaleInfo: maskScaleInfo,
 //            aspectRatio: maskAspectRatio
 //        )
-//        
+//
 //        var backgroundCGImage: CGImage?
 //        if let backgroundImage = vbPacket.backgroundImage {
 //            let backgroundAspectRatio = await metalScaler.getAspectRatio(width: CGFloat(backgroundImage.size.width), height: CGFloat(backgroundImage.size.height))
@@ -1020,7 +1022,7 @@ extension MetalProcessor {
 //                scaleInfo: backgroundScaleInfo,
 //                aspectRatio: backgroundAspectRatio
 //            )
-//            
+//
 //            backgroundCGImage = CGImage(
 //                width: backgroundInfo.texture.width,
 //                height: backgroundInfo.texture.height,
@@ -1047,7 +1049,7 @@ extension MetalProcessor {
 //            decode: nil,
 //            shouldInterpolate: true,
 //            intent: .defaultIntent) else { throw ACBClientErrors.imageCreationFailed }
-//        
+//
 //        guard let maskImage = CGImage(
 //            width: maskInfo.texture.width,
 //            height: maskInfo.texture.height,
@@ -1061,7 +1063,7 @@ extension MetalProcessor {
 //            shouldInterpolate: true,
 //            intent: .defaultIntent) else { fatalError() }
 //
-//      
+//
 //
 //        return try await blendImages(
 //            backgroundType: backgroundType,
@@ -1073,7 +1075,7 @@ extension MetalProcessor {
 //            metalScaler: metalScaler
 //        )
 //    }
-//    
+//
 //    /// This method is designed to take 3 buffer in order to blend them together and delivers a single object containg the Virtual Background Image
 //    /// - Parameters:
 //    ///   - foregroundBuffer: The `CVPixelBuffer` containing the original `AVCaptureOutput` image
@@ -1092,7 +1094,7 @@ extension MetalProcessor {
 //        metalScaler: MetalScaler
 //    ) async throws -> TextureInfo {
 //        let blendFilter = CIFilter.blendWithMask()
-//        
+//
 //        switch backgroundType {
 //        case .cameraBlur:
 //            let blurredImage = backgroundImage
@@ -1102,7 +1104,7 @@ extension MetalProcessor {
 //            blendFilter.inputImage = foregroundImage
 //            blendFilter.backgroundImage = blurredImage
 //            blendFilter.maskImage = maskImage
-//            
+//
 //        case .imageBlur:
 //            break
 //        case .image:
@@ -1111,11 +1113,11 @@ extension MetalProcessor {
 //            blendFilter.maskImage = maskImage
 //        }
 //        guard let image = blendFilter.outputImage else { throw ACBClientErrors.imageCreationFailed }
-//        
+//
 //        let aspectRatio = await getAspectRatio(
 //            width: CGFloat(image.extent.width),
 //            height: CGFloat(image.extent.height))
-//        
+//
 //        let scaleInfo = await createSize(
 //            for: scaleMode,
 //            originalSize: CGSize(
@@ -1126,7 +1128,7 @@ extension MetalProcessor {
 //                height: image.extent.size.height
 //            ),
 //            aspectRatio: aspectRatio)
-//        
+//
 //        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { throw ACBClientErrors.imageCreationFailed }
 //        let uiImage = UIImage(cgImage: cgImage)
 //        return try await resizeImage(
@@ -1239,7 +1241,7 @@ extension MTLTexture {
     }
 }
 
-
+#if os(iOS)
 extension UIImage {
     var bitsPerPixel: Int {
         guard let cgImage = self.cgImage else {
@@ -1255,6 +1257,7 @@ extension UIImage {
         return cgImage.bitmapInfo
     }
 }
+#endif
 
 public enum ScaleMode: Sendable {
     case aspectFitVertical, aspectFitHorizontal, aspectFill, none
