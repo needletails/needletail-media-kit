@@ -30,7 +30,7 @@ fileprivate let kernelLength = 51
 public struct ImageProcessor {
     
     nonisolated(unsafe) public init() {}
-    
+
     private var cgImage: CGImage?
     private var mode = ConvolutionModes.hann1D
     private var destinationBuffer = vImage_Buffer()
@@ -507,7 +507,7 @@ extension ImageProcessor {
 @ImageProcessorActor
 extension ImageProcessor {
     
-    private struct BlurObject: Sendable {
+    public struct BlurObject: Sendable {
         var image: CGImage
         var format: vImage_CGImageFormat
         var blurSourceBuffer: vImage_Buffer
