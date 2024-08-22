@@ -1,13 +1,44 @@
-#if defined(METAL_VERSION)
 //
-//  YuvToRGBShader.metal
+//  MetalShaders.metal
 //
 //
-//  Created by Cole M on 7/1/24.
+//  Created by Cole M on 7/17/24.
 //
+#ifdef __APPLE__
 
 #include <metal_stdlib>
 using namespace metal;
+
+//BT.601 YUV
+kernel void rgbToYuvBt601(
+    texture2d<float, access::read> rgbTexture [[texture(0)]],
+    texture2d<float, access::write> yTexture [[texture(1)]],
+    texture2d<float, access::write> uvTexture [[texture(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    // Get RGB pixel value
+    float4 rgbPixel = rgbTexture.read(gid);
+    
+    // Convert RGB to YUV (ITU-R BT.601-4 coefficients)
+    float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
+    float u = -0.169 * rgbPixel.r - 0.331 * rgbPixel.g + 0.500 * rgbPixel.b + 0.5;
+    float v = 0.500 * rgbPixel.r - 0.419 * rgbPixel.g - 0.081 * rgbPixel.b + 0.5;
+
+    // Clamp U and V values to [0, 1] range
+    u = clamp(u, 0.0, 1.0);
+    v = clamp(v, 0.0, 1.0);
+
+    // Write Y value to Y texture
+    float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
+    yTexture.write(yValue, gid);
+    
+    // Pack U and V values into a single float4
+    float4 uvValue = float4(u, v, 0.0, 1.0);
+
+    // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+    uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
+}
+
 
 kernel void rgbToYuv(
     texture2d<float, access::read> rgbTexture [[texture(0)]],
@@ -37,8 +68,6 @@ kernel void rgbToYuv(
     // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
 }
-
-
 
 kernel void ycbcrToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
                        texture2d<float, access::read> uvTexture [[texture(1)]],
