@@ -25,6 +25,7 @@ public actor MetalProcessor {
     var ycbcrToRgbKernelPipeline: MTLComputePipelineState?
     var rgbToYuvKernelPipeline: MTLComputePipelineState?
     var i420ToRgbKernelPipeline: MTLComputePipelineState?
+    var blurPipelineState: MTLComputePipelineState?
     
     public init() {
         do {
@@ -277,9 +278,9 @@ public actor MetalProcessor {
     }
     
     public func createSize(for scaleMode: ScaleMode = .none,
-                    originalSize: CGSize,
-                    desiredSize: CGSize,
-                    aspectRatio: CGFloat = 0) -> ScaledInfo {
+                           originalSize: CGSize,
+                           desiredSize: CGSize,
+                           aspectRatio: CGFloat = 0) -> ScaledInfo {
         var size = CGSize()
         var scaleX: CGFloat = 1.0
         var scaleY: CGFloat = 1.0
@@ -323,7 +324,7 @@ public actor MetalProcessor {
         scaleY = size.height / originalSize.height
         return ScaledInfo(size: size, scaleX: scaleX, scaleY: scaleY)
     }
-
+    
     
     public func getAspectRatio(width: CGFloat, height: CGFloat) -> CGFloat {
         let width = width
@@ -334,7 +335,7 @@ public actor MetalProcessor {
             return height / width
         }
     }
-  
+    
 #if canImport(WebRTC)
     public func createMetalImage(
         fromPixelBuffer pixelBuffer: CVPixelBuffer? = nil,
@@ -373,7 +374,7 @@ public actor MetalProcessor {
             throw MetalScalingErrors.failedToCreateTexture
         }
     }
-    #endif
+#endif
     
     public func resizeImage(
         sourceTexture: MTLTexture,
@@ -496,6 +497,38 @@ public actor MetalProcessor {
         // Return Destination Texture
         return destinationTexture
     }
+    
+    public func blurTexture(sourceTexture: MTLTexture) async throws -> MTLTexture? {
+        let filter = MPSImageGaussianBlur(device: device, sigma: 10)
+        
+        //DESTINATION NEEDS TO BE SIZE OF PARENT VIEW
+        let destTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: sourceTexture.pixelFormat,
+                                                                             width: Int(sourceTexture.width),
+                                                                             height: Int(sourceTexture.height),
+                                                                             mipmapped: false)
+        destTextureDescriptor.usage = [.shaderRead, .shaderWrite]
+        guard let destTexture = device.makeTexture(descriptor: destTextureDescriptor) else {
+            throw MetalScalingErrors.failedToCreateTexture
+        }
+        
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { throw MetalScalingErrors.errorSettingUpCommandQueue }
+        defer {
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
+        filter.encode(commandBuffer: commandBuffer,
+                      sourceTexture: sourceTexture,
+                      destinationTexture: destTexture)
+        return destTexture
+    }
+    
+#if os(iOS)
+    public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any]) async -> UIImage {
+        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError() }
+        let orientedImage = ciImage.oriented(forExifOrientation: 4)
+        return UIImage(ciImage: orientedImage)
+    }
+#endif
 }
 
 extension MetalProcessor {
@@ -526,7 +559,7 @@ extension MetalProcessor {
         guard status2 == kCVReturnSuccess, let pixelBuffer = outputPixelBuffer else {
             throw MetalScalingErrors.failedToCreateOutputPixelBuffer
         }
-
+        
         // Lock the base address of the output CVPixelBuffer
         let baseAddress = CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
         
@@ -550,11 +583,11 @@ extension MetalProcessor {
         CVPixelFormatDescriptionCreateWithPixelFormatType(kCFAllocatorDefault, .zero)
         // Unlock base addresses
         CVPixelBufferUnlockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
-            CMSetAttachments(pixelBuffer, attachments: attachments.propagated as CFDictionary, attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            CMSetAttachments(pixelBuffer, attachments: attachments.nonPropagated as CFDictionary, attachmentMode: kCMAttachmentMode_ShouldNotPropagate)
+        CMSetAttachments(pixelBuffer, attachments: attachments.propagated as CFDictionary, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        CMSetAttachments(pixelBuffer, attachments: attachments.nonPropagated as CFDictionary, attachmentMode: kCMAttachmentMode_ShouldNotPropagate)
         return pixelBuffer
     }
-
+    
     
     ///Converts a YUV PixelBuffer to a YUV Texture and then outputs a new CVPixelBuffer from that YUV Texture that is properly formated.
     public func convertToPixelBuffer(
@@ -596,8 +629,8 @@ extension MetalProcessor {
         let uvTexture = try createMTLTextureForPlane(cvPixelBuffer: cvPixelBuffer, planeIndex: 1, textureCache: cache, format: .rg8Unorm, device: device)
         
         // Resize textures
-//        let resizedY = try resizeImage(sourceTexture: yTexture, parentBounds: parentBounds, scaleInfo: scaleInfo, aspectRatio: aspectRatio)
-//        let resizedUV = try resizeImage(sourceTexture: uvTexture, parentBounds: CGSize(width: parentBounds.width / 2, height: parentBounds.height / 2), scaleInfo: scaleInfo, aspectRatio: aspectRatio)
+        //        let resizedY = try resizeImage(sourceTexture: yTexture, parentBounds: parentBounds, scaleInfo: scaleInfo, aspectRatio: aspectRatio)
+        //        let resizedUV = try resizeImage(sourceTexture: uvTexture, parentBounds: CGSize(width: parentBounds.width / 2, height: parentBounds.height / 2), scaleInfo: scaleInfo, aspectRatio: aspectRatio)
         
         // Create output pixel buffer
         var outputPixelBuffer: CVPixelBuffer?
@@ -635,7 +668,7 @@ extension MetalProcessor {
         return pixelBuffer
     }
     
-
+    
     public func createSampleBuffer(_ pixelBuffer: CVPixelBuffer, time: CMTime) async throws -> CMSampleBuffer? {
         // Create the Format Description for the Image Buffer
         var formatDescription: CMVideoFormatDescription?
@@ -886,6 +919,49 @@ extension MetalProcessor {
                 imageSize: imageSize,
                 bitsPerPixel: image.bitsPerPixel,
                 bitmapInfo: image.bitmapInfo)
+            
+            destinationTextureInfo.bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            destinationTextureInfo.scaleX = scaleInfo.scaleX
+            destinationTextureInfo.scaleY = scaleInfo.scaleY
+            return destinationTextureInfo
+        }
+#elseif os(macOS)
+    private func createTexture(fromImage: NSImage, device: MTLDevice) -> MTLTexture? {
+        guard let cgImage = fromImage.cgImage else {
+            return nil
+        }
+        
+        let textureLoader = MTKTextureLoader(device: device)
+        do {
+            let texture = try textureLoader.newTexture(cgImage: cgImage, options: nil)
+            return texture
+        } catch {
+            print("Error creating texture from image: \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
+    public func resizeImage(
+        image: NSImage,
+        parentBounds: CGSize,
+        scaleInfo: ScaledInfo,
+        aspectRatio: CGFloat) async throws -> TextureInfo {
+            
+            guard let texture = createTexture(fromImage: image, device: device) else {
+                fatalError()
+            }
+            let resizedTexture = try resizeImage(
+                sourceTexture: texture,
+                parentBounds: parentBounds,
+                scaleInfo: scaleInfo,
+                aspectRatio: aspectRatio
+            )
+            let imageSize = CGSize(width: resizedTexture.width, height: resizedTexture.height)
+            var destinationTextureInfo = try getTextureInfo(
+                texture: resizedTexture,
+                imageSize: imageSize,
+                bitsPerPixel: image.bitsPerPixel!,
+                bitmapInfo: image.bitmapInfo!.1)
             
             destinationTextureInfo.bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
             destinationTextureInfo.scaleX = scaleInfo.scaleX
@@ -1253,5 +1329,48 @@ extension UIImage {
 
 public enum ScaleMode: Sendable {
     case aspectFitVertical, aspectFitHorizontal, aspectFill, none
+}
+#endif
+
+#if os(macOS)
+extension NSImage {
+    var bitsPerPixel: Int? {
+        guard let tiffData = self.tiffRepresentation,
+              let imageRep = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return imageRep.bitsPerPixel
+    }
+    
+    var nsBitmapInfo: NSBitmapImageRep? {
+        guard let tiffData = self.tiffRepresentation,
+              let imageRep = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return imageRep
+    }
+    
+    var bitmapInfo: (bitsPerPixel: Int, bitmapInfo: CGBitmapInfo)? {
+        // Get the TIFF representation of the NSImage
+        guard let tiffData = self.tiffRepresentation,
+              let imageRep = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        
+        // Get bits per pixel
+        let bitsPerPixel = imageRep.bitsPerPixel
+        
+        // Determine the CGBitmapInfo based on the alpha channel
+        let alphaInfo: CGBitmapInfo
+        
+        switch imageRep.hasAlpha {
+        case true:
+            alphaInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        case false:
+            alphaInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+        }
+        
+        return (bitsPerPixel, alphaInfo)
+    }
 }
 #endif
