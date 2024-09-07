@@ -22,8 +22,6 @@ public enum ImageErrors: Error, Sendable {
 fileprivate let kernelLength = 51
 public actor ImageProcessor {
     
-    nonisolated(unsafe) public init() {}
-    
     private var cgImage: CGImage?
     private var mode = ConvolutionModes.hann1D
     private var destinationBuffer = vImage_Buffer()

@@ -62,7 +62,7 @@ extension NSImage {
         return newImage
     }
     
-    public func merge(with other: NSImage?) -> NSImage? {
+    @MainActor public func merge(with other: NSImage?) -> NSImage? {
         guard let otherImage = other else {
             return nil
         }

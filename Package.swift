@@ -1,4 +1,4 @@
-// swift-tools-version:5.10
+// swift-tools-version:6.0
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -19,8 +19,8 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "NeedletailMediaKit",
-            resources: [.process("Sources/NeedletailMediaKit/MetalProcessor/Shaders/MetalShaders.metal")]
+            name: "NeedletailMediaKit"
+//            resources: [.process("Sources/NeedletailMediaKit/MetalProcessor/Shaders/ImageShaders.metal")]
         ),
         .testTarget(
             name: "needletail-media-kitTests",
@@ -29,6 +29,6 @@ let package = Package(
 )
 
 #if os(iOS) || os(macOS)
-package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "126.0.0")))
+package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "128.0.0")))
 package.targets.first(where: { $0.name == "NeedletailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "WebRTC"))
 #endif

@@ -1,5 +1,5 @@
 //
-//  MetalShaders.metal
+//  ImageShaders.metal
 //
 //
 //  Created by Cole M on 7/17/24.

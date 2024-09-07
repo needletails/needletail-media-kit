@@ -5,8 +5,8 @@
 //
 //  Created by Cole M on 6/24/24.
 //
-import Metal
-import MetalPerformanceShaders
+@preconcurrency import Metal
+@preconcurrency import MetalPerformanceShaders
 import MetalKit
 import Vision
 import CoreMedia.CMTime
@@ -344,17 +344,17 @@ public actor MetalProcessor {
         scaleInfo: ScaledInfo,
         aspectRatio: CGFloat
     ) async throws -> TextureInfo {
-        if var pixelBuffer = pixelBuffer {
-            let texture = try! convertYUVToRGB(
+        if let pixelBuffer = pixelBuffer {
+            let texture = try convertYUVToRGB(
                 cvPixelBuffer: pixelBuffer,
                 device: self.device)
-            let resizedTexture = try! resizeImage(
+            let resizedTexture = try resizeImage(
                 sourceTexture: texture,
                 parentBounds: parentBounds,
                 scaleInfo: scaleInfo,
                 aspectRatio: aspectRatio
             )
-            var info = try! getTextureInfo(texture: resizedTexture)
+            var info = try getTextureInfo(texture: resizedTexture)
             info.scaleX = scaleInfo.scaleX
             info.scaleY = scaleInfo.scaleY
             return info
@@ -538,7 +538,7 @@ extension MetalProcessor {
         attachments: CMAttachmentBearerAttachments
     ) throws -> CVPixelBuffer? {
         // Pixel buffer attributes
-        var pixelBufferAttributes: [String: Any] = [
+        let pixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             kCVPixelBufferWidthKey as String: y.width,
             kCVPixelBufferHeightKey as String: y.height,
@@ -561,7 +561,7 @@ extension MetalProcessor {
         }
         
         // Lock the base address of the output CVPixelBuffer
-        let baseAddress = CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
+        _ = CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
         
         // Copy Y and UV plane data
         if let yBaseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
@@ -622,7 +622,7 @@ extension MetalProcessor {
             }
         }
         // Lock the base address of the input CVPixelBuffer
-        let baseAddress = CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly)
+       _ = CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly)
         
         // Create textures for Y and UV planes
         let yTexture = try createMTLTextureForPlane(cvPixelBuffer: cvPixelBuffer, planeIndex: 0, textureCache: cache, format: .r8Unorm, device: device)
@@ -634,15 +634,15 @@ extension MetalProcessor {
         
         // Create output pixel buffer
         var outputPixelBuffer: CVPixelBuffer?
-        let width = yTexture.width
-        let height = yTexture.height
+//        let width = yTexture.width
+//        let height = yTexture.height
         let status2 = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outputPixelBuffer)
         guard status2 == kCVReturnSuccess, let pixelBuffer = outputPixelBuffer else {
             throw MetalScalingErrors.failedToCreateOutputPixelBuffer
         }
         
         // Lock the base address of the output CVPixelBuffer
-        let baseAddress2 = CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
+        _ = CVPixelBufferLockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
         
         // Copy Y and UV plane data
         if let yBaseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
@@ -711,7 +711,7 @@ extension MetalProcessor {
         
         var pixelBufferPool: CVPixelBufferPool?
         
-        let pool = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pixelBufferPool)
+        _ = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pixelBufferPool)
         
         var pixelBuffer: CVPixelBuffer?
         let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferPool!, &pixelBuffer)
