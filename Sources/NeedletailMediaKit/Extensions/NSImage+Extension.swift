@@ -205,9 +205,7 @@ extension NSImage {
         
         return bitmap.representation(using: .jpeg, properties: [:])
     }
-}
 
-extension NSImage {
     public func roundCorners(withRadius radius: CGFloat) -> NSImage {
         let rect = NSRect(origin: NSPoint.zero, size: size)
         if

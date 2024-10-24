@@ -26,6 +26,8 @@ public actor MetalProcessor {
     var rgbToYuvKernelPipeline: MTLComputePipelineState?
     var i420ToRgbKernelPipeline: MTLComputePipelineState?
     var blurPipelineState: MTLComputePipelineState?
+    let colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]
+
     
     public init() {
         do {
@@ -523,10 +525,22 @@ public actor MetalProcessor {
     }
     
 #if os(iOS)
-    public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any]) async -> UIImage {
+    public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> UIImage {
         guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError() }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
         return UIImage(ciImage: orientedImage)
+    }
+#elseif os(macOS)
+    public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> NSImage {
+        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError() }
+        let orientedImage = ciImage.oriented(forExifOrientation: 4)
+        let ciContext = CIContext()
+        guard let cgImage = ciContext.createCGImage(orientedImage, from: orientedImage.extent) else {
+            fatalError()
+        }
+        
+        // Create and return an NSImage from the CGImage
+        return NSImage(cgImage: cgImage, size: orientedImage.extent.size)
     }
 #endif
 }
@@ -727,7 +741,7 @@ extension MetalProcessor {
 }
 
 #if canImport(WebRTC)
-import WebRTC
+@preconcurrency import WebRTC
 //MARK: I420
 extension MetalProcessor  {
     
@@ -925,6 +939,23 @@ extension MetalProcessor {
             destinationTextureInfo.scaleY = scaleInfo.scaleY
             return destinationTextureInfo
         }
+    
+    public func resizeImage(
+        image: UIImage,
+        desiredSize: CGSize
+    ) async throws -> MTLTexture {
+        let originalSize = image.size
+        let aspectRatio = await getAspectRatio(width: originalSize.width, height: originalSize.height)
+        let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
+        
+        let textureInfo = try await resizeImage(
+            image: image,
+            parentBounds: desiredSize,
+            scaleInfo: info,
+            aspectRatio: aspectRatio
+        )
+        return textureInfo.texture
+    }
 #elseif os(macOS)
     private func createTexture(fromImage: NSImage, device: MTLDevice) -> MTLTexture? {
         guard let cgImage = fromImage.cgImage else {
@@ -968,6 +999,23 @@ extension MetalProcessor {
             destinationTextureInfo.scaleY = scaleInfo.scaleY
             return destinationTextureInfo
         }
+    
+    public func resizeImage(
+        image: NSImage,
+        desiredSize: CGSize
+    ) async throws -> MTLTexture {
+        let originalSize = image.size
+        let aspectRatio = await getAspectRatio(width: originalSize.width, height: originalSize.height)
+        let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
+        
+        let textureInfo = try await resizeImage(
+            image: image,
+            parentBounds: desiredSize,
+            scaleInfo: info,
+            aspectRatio: aspectRatio
+        )
+        return textureInfo.texture
+    }
 #endif
 }
 
