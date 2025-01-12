@@ -12,23 +12,23 @@ let package = Package(
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "NeedletailMediaKit",
-            targets: ["NeedletailMediaKit"]),
+            name: "NeedleTailMediaKit",
+            targets: ["NeedleTailMediaKit"]),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "NeedletailMediaKit"
-//            resources: [.process("Sources/NeedletailMediaKit/MetalProcessor/Shaders/ImageShaders.metal")]
+            name: "NeedleTailMediaKit"
+//            resources: [.process("Sources/NeedleTailMediaKit/MetalProcessor/Shaders/ImageShaders.metal")]
         ),
         .testTarget(
             name: "needletail-media-kitTests",
-            dependencies: ["NeedletailMediaKit"]),
+            dependencies: ["NeedleTailMediaKit"]),
     ]
 )
 
 #if os(iOS) || os(macOS)
-package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "128.0.0")))
-package.targets.first(where: { $0.name == "NeedletailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "WebRTC"))
+package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "130.0.0")))
+package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "WebRTC"))
 #endif

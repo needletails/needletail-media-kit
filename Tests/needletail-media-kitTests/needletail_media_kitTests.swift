@@ -1,6 +1,6 @@
 #if os(macOS) || os(iOS)
 import XCTest
-@testable import NeedletailMediaKit
+@testable import NeedleTailMediaKit
 
 final class needletail_media_kitTests: XCTestCase {
     func testExample() throws {

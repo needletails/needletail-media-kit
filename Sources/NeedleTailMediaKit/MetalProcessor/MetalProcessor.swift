@@ -309,7 +309,7 @@ public actor MetalProcessor {
             
         case .aspectFill:
             //This is correct for fill, don't change it
-            if desiredSize.width > desiredSize.height {
+            if originalSize.width > originalSize.height {
                 size.width = desiredSize.width
                 size.height = aspectRatio != 0 ? desiredSize.width / aspectRatio : desiredSize.height
             } else {
@@ -899,9 +899,9 @@ extension MetalProcessor {
 #if os(iOS)
     private func createTexture(fromImage: UIImage, device: MTLDevice) -> MTLTexture? {
         guard let cgImage = fromImage.cgImage else {
+            print("Error: UIImage is nil or cannot be converted to CGImage.")
             return nil
         }
-        
         let textureLoader = MTKTextureLoader(device: device)
         do {
             let texture = try textureLoader.newTexture(cgImage: cgImage, options: nil)
@@ -917,7 +917,7 @@ extension MetalProcessor {
         parentBounds: CGSize,
         scaleInfo: ScaledInfo,
         aspectRatio: CGFloat) async throws -> TextureInfo {
-            
+        
             guard let texture = createTexture(fromImage: image, device: device) else {
                 fatalError()
             }
@@ -947,10 +947,10 @@ extension MetalProcessor {
         let originalSize = image.size
         let aspectRatio = await getAspectRatio(width: originalSize.width, height: originalSize.height)
         let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
-        
         let textureInfo = try await resizeImage(
             image: image,
-            parentBounds: desiredSize,
+            parentBounds: info.size
+            ,
             scaleInfo: info,
             aspectRatio: aspectRatio
         )
