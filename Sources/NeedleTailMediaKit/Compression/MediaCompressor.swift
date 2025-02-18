@@ -6,13 +6,14 @@
 //
 #if os(iOS) || os(macOS)
 import AVFoundation
+import CoreImage
 
 public actor MediaCompressor {
     
     public init() {}
     
     enum CompressionErrors: Error {
-        case failedToCreateExportSession
+        case failedToCreateExportSession, noVideoTrack
     }
     
     public enum AVAssetExportPreset: String {
@@ -51,8 +52,76 @@ public actor MediaCompressor {
         case appleM4VWiFi = "AVAssetExportPresetAppleM4VWiFi"
         case appleM4V720pHD = "AVAssetExportPresetAppleM4V720pHD"
         case appleM4V1080pHD = "AVAssetExportPresetAppleM4V1080pHD"
+        
+        //        func targetSize(for preset: AVAssetExportPreset) -> CGSize {
+        var targetSize: CGSize {
+            switch self {
+            case .lowQuality:
+                return CGSize(width: 320, height: 240) // Low quality
+            case .mediumQuality:
+                return CGSize(width: 640, height: 360) // Medium quality
+            case .highestQuality:
+                return CGSize(width: 1920, height: 1080) // Highest quality (1080p)
+                
+            case .hevcHighestQuality:
+                return CGSize(width: 3840, height: 2160) // HEVC highest quality (4K)
+            case .hevcHighestQualityWithAlpha:
+                return CGSize(width: 3840, height: 2160) // HEVC highest quality with alpha (4K)
+                
+            case .resolution640x480:
+                return CGSize(width: 640, height: 480) // 640x480
+            case .resolution960x540:
+                return CGSize(width: 960, height: 540) // 960x540
+            case .resolution1280x720:
+                return CGSize(width: 1280, height: 720) // 720p
+            case .resolution1920x1080:
+                return CGSize(width: 1920, height: 1080) // 1080p
+            case .resolution3840x2160:
+                return CGSize(width: 3840, height: 2160) // 4K
+                
+            case .hevc1920x1080:
+                return CGSize(width: 1920, height: 1080) // HEVC 1080p
+            case .hevc1920x1080WithAlpha:
+                return CGSize(width: 1920, height: 1080) // HEVC 1080p with alpha
+            case .hevc3840x2160:
+                return CGSize(width: 3840, height: 2160) // HEVC 4K
+            case .hevc3840x2160WithAlpha:
+                return CGSize(width: 3840, height: 2160) // HEVC 4K with alpha
+                
+            case .hevc7680x4320:
+                return CGSize(width: 7680, height: 4320) // HEVC 8K
+            case .mvhevc960x960:
+                return CGSize(width: 960, height: 960) // MV HEVC 960x960
+            case .mvhevc1440x1440:
+                return CGSize(width: 1440, height: 1440) // MV HEVC 1440x1440
+                
+            case .appleM4A:
+                return CGSize(width: 640, height: 480) // M4A (audio only, size not applicable)
+            case .passthrough:
+                return CGSize(width: 1920, height: 1080) // Passthrough (assume 1080p)
+            case .appleProRes422LPCM:
+                return CGSize(width: 1920, height: 1080) // ProRes 422 (assume 1080p)
+            case .appleProRes4444LPCM:
+                return CGSize(width: 1920, height: 1080) // ProRes 4444 (assume 1080p)
+                
+            case .appleM4VCellular:
+                return CGSize(width: 640, height: 360) // M4V for cellular (lower resolution)
+            case .appleM4ViPod:
+                return CGSize(width: 640, height: 480) // M4V for iPod (standard resolution)
+            case .appleM4V480pSD:
+                return CGSize(width: 854, height: 480) // 480p SD
+            case .appleM4VAppleTV:
+                return CGSize(width: 1920, height: 1080) // M4V for Apple TV (1080p)
+                
+            case .appleM4VWiFi:
+                return CGSize(width: 1280, height: 720) // M4V for WiFi (720p)
+            case .appleM4V720pHD:
+                return CGSize(width: 1280, height: 720) // 720p HD
+            case .appleM4V1080pHD:
+                return CGSize(width: 1920, height: 1080) // 1080p HD
+            }
+        }
     }
-    
     
     /// Creates a compress Media Item for a given URL. **IMPORTANT** you need to remove the file from the tempory directory after you are finished with it.
     /// - Parameters:
@@ -61,24 +130,97 @@ public actor MediaCompressor {
     ///   - fileType: The media type
     /// - Throws: Potential Errors if we are experiencing an issue in the export session
     /// - Returns: The Compressed URL of the export session
-    public func compressMedia(inputURL: URL, presetName: AVAssetExportPreset, fileType: AVFileType) async throws -> URL {
+    nonisolated public func compressMedia(
+        inputURL: URL,
+        presetName: AVAssetExportPreset,
+        fileType: AVFileType,
+        outputFileType: AVFileType,
+        isPortrait: Bool
+    ) async throws -> URL {
         let tempDirectory = FileManager.default.temporaryDirectory
         let outputURL = tempDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(fileType.rawValue)
         
         let asset = AVAsset(url: inputURL)
+        
+        // Check for video tracks
+        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+            throw CompressionErrors.noVideoTrack
+        }
+        
+        let videoComposition = try await createComposition(
+            asset: asset,
+            track: videoTrack,
+            targetSize: presetName.targetSize)
+        
+        if isPortrait {
+            videoComposition.renderSize = CGSize(width: presetName.targetSize.height, height: presetName.targetSize.width)
+        } else {
+            videoComposition.renderSize = presetName.targetSize
+        }
+
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: presetName.rawValue) else {
             throw CompressionErrors.failedToCreateExportSession
         }
-        if #available(iOS 18, macOS 15, *) {
-            try await exportSession.export(to: outputURL, as: .mov, isolation: self)
-        } else {
-            exportSession.outputURL = outputURL
-            exportSession.outputFileType = fileType
-            await exportSession.export()
-        }
+        
+        exportSession.videoComposition = videoComposition
+        
+        // Start the export process
+        try await exportSession.export(to: outputURL, as: outputFileType, isolation: self)
+        
         return outputURL
     }
-    
-    
+
+    nonisolated func createComposition(
+        asset: AVAsset,
+        track: AVAssetTrack,
+        targetSize: CGSize
+    ) async throws -> AVMutableVideoComposition {
+        return try await AVMutableVideoComposition.videoComposition(with: asset) { request in
+            // Get the source image from the request
+            let source = request.sourceImage.extent
+            var mutableSize = targetSize
+            
+            // Get the original size of the source image
+            let originalSize = CGSize(width: source.width, height: source.height)
+            if originalSize.height > originalSize.width {
+                mutableSize.width = targetSize.height
+                mutableSize.height = targetSize.width
+            }
+
+            // Calculate the scale factors for width and height
+            let scaleX = mutableSize.width / originalSize.width
+            let scaleY = mutableSize.height / originalSize.height
+            let scale = min(scaleX, scaleY) // Maintain aspect ratio
+            
+            // Create the filter and set the input values
+            let filter = CIFilter(name: "CILanczosScaleTransform")
+            filter?.setValue(request.sourceImage, forKey: kCIInputImageKey)
+            filter?.setValue(scale, forKey: kCIInputScaleKey) // Set the scale factor
+            filter?.setValue(1.0, forKey: kCIInputAspectRatioKey) // Maintain aspect ratio
+            
+            // Get the output image from the filter
+            guard let resultImage = filter?.outputImage else {
+                print("Result image is nil")
+                request.finish(with: CIImage(), context: nil) // Finish with an empty image
+                return
+            }
+            
+            // Calculate the new size after scaling
+            let scaledWidth = originalSize.width * scale
+            let scaledHeight = originalSize.height * scale
+            
+            // Calculate the position to center the image
+            let xOffset = (mutableSize.width - scaledWidth) / 2
+            let yOffset = (mutableSize.height - scaledHeight) / 2
+            
+            // Create a transform to center the image
+            let transform = CGAffineTransform(translationX: xOffset, y: yOffset)
+            let centeredImage = resultImage.transformed(by: transform)
+            
+            
+            // Finish the request with the result image
+            request.finish(with: centeredImage, context: nil)
+        }
+    }
 }
 #endif

@@ -9,7 +9,6 @@
 
 import Accelerate
 
-@available(iOS 16.4, macOS 13.3, *)
 extension Matrix {
     
     /// Calculates `CblasColMajor` matrix multiply, `c = a * b`.
