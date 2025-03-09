@@ -103,9 +103,15 @@ kernel void i420ToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
     float v = vTexture.read(uvGid).r - 0.5; // V is subsampled by 2
     
     // BT.601 YUV to RGB conversion
-    float r = y + 1.402 * v;
-    float g = y - 0.344136 * u - 0.714136 * v;
-    float b = y + 1.772 * u;
+    float r = y + 1.403 * v;
+    float g = y - 0.344 * u - 0.714 * v;
+    float b = y + 1.770 * u;
+    
+    // Clamp the RGB values to the range [0, 1]
+    r = clamp(r, 0.0, 1.0);
+    g = clamp(g, 0.0, 1.0);
+    b = clamp(b, 0.0, 1.0);
+    
     
     // Write the RGB values to the output texture
     rgbTexture.write(float4(r, g, b, 1.0), gid);

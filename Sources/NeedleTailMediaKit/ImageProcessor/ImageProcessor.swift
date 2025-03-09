@@ -15,9 +15,9 @@
 //import CoreImage.CIFilterBuiltins
 //@preconcurrency import Accelerate
 //
-//public enum ImageErrors: Error, Sendable {
-//    case imageError, cannotGetSize, cannotBlur, imageDataNil, cannotCreateImage
-//}
+public enum ImageErrors: Error {
+    case imageCreationFailed(String)
+}
 //
 //fileprivate let kernelLength = 51
 //public actor ImageProcessor {

@@ -911,7 +911,7 @@ extension MetalProcessor {
             return nil
         }
     }
-    
+
     public func resizeImage(
         image: UIImage,
         parentBounds: CGSize,
@@ -919,7 +919,7 @@ extension MetalProcessor {
         aspectRatio: CGFloat) async throws -> TextureInfo {
         
             guard let texture = createTexture(fromImage: image, device: device) else {
-                fatalError()
+                throw MetalScalingErrors.failedToCreateTexture
             }
             let resizedTexture = try resizeImage(
                 sourceTexture: texture,
@@ -949,8 +949,7 @@ extension MetalProcessor {
         let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
         let textureInfo = try await resizeImage(
             image: image,
-            parentBounds: info.size
-            ,
+            parentBounds: info.size,
             scaleInfo: info,
             aspectRatio: aspectRatio
         )
@@ -1043,7 +1042,7 @@ extension MetalProcessor {
 //                                    backgroundType: VirtualBackgroundType
 //    ) async throws -> TextureInfo {
 //
-//        guard let foregroundPixels = vbPacket.foregroundPixels else { throw ACBClientErrors.pixelBufferCreationError }
+//        guard let foregroundPixels = vbPacket.foregroundPixels else { throw MetalScalingErrors.pixelBufferCreationError }
 //
 //        let aspectRatio = await metalScaler.getAspectRatio(
 //            width: CGFloat(foregroundPixels.width),
@@ -1078,7 +1077,7 @@ extension MetalProcessor {
 //            provider: foregroundInfo.provider,
 //            decode: nil,
 //            shouldInterpolate: true,
-//            intent: .defaultIntent) else { throw ACBClientErrors.imageCreationFailed }
+//            intent: .defaultIntent) else { throw MetalScalingErrors.imageCreationFailed }
 //
 //        let foregroundBounds = CGSize(width: foregroundInfo.texture.width, height: foregroundInfo.texture.height)
 //        // Create request handler
@@ -1092,11 +1091,11 @@ extension MetalProcessor {
 //        try handler.perform([request])
 //
 //        guard let mask = request.results?.first else {
-//            throw ACBClientErrors.cannotProcessBackgroundImage
+//            throw MetalScalingErrors.cannotProcessBackgroundImage
 //        }
 //
 //        let ciImage = CIImage(cvPixelBuffer: mask.pixelBuffer)
-//        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { throw ACBClientErrors.imageCreationFailed }
+//        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { throw MetalScalingErrors.imageCreationFailed }
 //        let maskImage = UIImage(cgImage: cgImage)
 //
 //
@@ -1164,7 +1163,7 @@ extension MetalProcessor {
 //            provider: foregroundInfo.provider,
 //            decode: nil,
 //            shouldInterpolate: true,
-//            intent: .defaultIntent) else { throw ACBClientErrors.imageCreationFailed }
+//            intent: .defaultIntent) else { throw MetalScalingErrors.imageCreationFailed }
 //
 //        guard let maskImage = CGImage(
 //            width: maskInfo.texture.width,
@@ -1228,7 +1227,7 @@ extension MetalProcessor {
 //            blendFilter.backgroundImage = backgroundImage
 //            blendFilter.maskImage = maskImage
 //        }
-//        guard let image = blendFilter.outputImage else { throw ACBClientErrors.imageCreationFailed }
+//        guard let image = blendFilter.outputImage else { throw MetalScalingErrors.imageCreationFailed }
 //
 //        let aspectRatio = await getAspectRatio(
 //            width: CGFloat(image.extent.width),
@@ -1245,7 +1244,7 @@ extension MetalProcessor {
 //            ),
 //            aspectRatio: aspectRatio)
 //
-//        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { throw ACBClientErrors.imageCreationFailed }
+//        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { throw MetalScalingErrors.imageCreationFailed }
 //        let uiImage = UIImage(cgImage: cgImage)
 //        return try await resizeImage(
 //            image: uiImage,

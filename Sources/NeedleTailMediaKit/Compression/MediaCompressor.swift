@@ -163,6 +163,8 @@ public actor MediaCompressor {
         }
         
         exportSession.videoComposition = videoComposition
+        //Strip Metadata
+        exportSession.metadata = []
         
         // Start the export process
         try await exportSession.export(to: outputURL, as: outputFileType, isolation: self)

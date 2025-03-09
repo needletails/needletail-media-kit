@@ -5,6 +5,10 @@
 //  Created by Cole M on 8/6/23.
 //
 
+public enum ImageType {
+    case png, jpg
+}
+
 #if os(macOS)
 import Cocoa
 
@@ -231,6 +235,49 @@ extension NSImage {
         
         return self
     }
+
+    public func stripped(type: ImageType) throws -> NSImage {
+        // Ensure we have TIFF representation
+        guard let tiffData = self.tiffRepresentation else {
+            throw ImageErrors.imageCreationFailed("No TIFF representation available.")
+        }
+        
+        // Create a CGImageSource from the TIFF data
+        guard let source = CGImageSourceCreateWithData(tiffData as CFData, nil) else {
+            throw ImageErrors.imageCreationFailed("Unable to create CGImageSource.")
+        }
+        
+        // Create a mutable CFData object
+        guard let mutableData = CFDataCreateMutable(kCFAllocatorDefault, 0) else {
+            throw ImageErrors.imageCreationFailed("Unable to create mutable CFData.")
+        }
+        
+        // Create a destination for the PNG data
+        guard let destination = CGImageDestinationCreateWithData(mutableData, type == .png ? kUTTypePNG : kUTTypeJPEG, 1, nil) else {
+            throw ImageErrors.imageCreationFailed("Unable to create CGImageDestination.")
+        }
+        
+        // Copy the image from the source to the destination without metadata
+        if let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            CGImageDestinationAddImage(destination, image, nil)
+            if !CGImageDestinationFinalize(destination) {
+                throw ImageErrors.imageCreationFailed("Failed to finalize the image destination.")
+            }
+        } else {
+            throw ImageErrors.imageCreationFailed("Unable to create image from CGImageSource.")
+        }
+        
+        // Convert CFData to Swift Data
+        let pngData = mutableData as Data
+        
+        // Create a new NSImage from the stripped data
+        guard let nsImage = NSImage(data: pngData) else {
+            throw ImageErrors.imageCreationFailed("Unable to create NSImage from \(type == .png ? "PNG" : "JPG") data.")
+        }
+        
+        return nsImage
+    }
+    
 }
 
 extension NSImage: @unchecked Sendable {}
