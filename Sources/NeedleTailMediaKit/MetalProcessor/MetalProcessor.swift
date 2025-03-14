@@ -526,17 +526,17 @@ public actor MetalProcessor {
     
 #if os(iOS)
     public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> UIImage {
-        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError() }
+        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError("Failed to create CIImage") }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
         return UIImage(ciImage: orientedImage)
     }
 #elseif os(macOS)
     public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> NSImage {
-        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError() }
+        guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError("Failed to create CIImage") }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
         let ciContext = CIContext()
         guard let cgImage = ciContext.createCGImage(orientedImage, from: orientedImage.extent) else {
-            fatalError()
+            fatalError("Failed to create CGImage")
         }
         
         // Create and return an NSImage from the CGImage
@@ -978,7 +978,7 @@ extension MetalProcessor {
         aspectRatio: CGFloat) async throws -> TextureInfo {
             
             guard let texture = createTexture(fromImage: image, device: device) else {
-                fatalError()
+                throw MetalScalingErrors.failedToCreateTexture
             }
             let resizedTexture = try resizeImage(
                 sourceTexture: texture,
