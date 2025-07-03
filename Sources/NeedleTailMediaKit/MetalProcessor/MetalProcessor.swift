@@ -1,6 +1,6 @@
 #if os(iOS) || os(macOS)
 //
-//  Untitled.swift
+//  MetalProcessor.swift
 //
 //
 //  Created by Cole M on 6/24/24.
@@ -8,8 +8,9 @@
 @preconcurrency import Metal
 @preconcurrency import MetalPerformanceShaders
 import MetalKit
-import Vision
 import CoreMedia.CMTime
+@preconcurrency import Accelerate
+import Vision
 
 public actor MetalProcessor {
     
@@ -23,11 +24,20 @@ public actor MetalProcessor {
     let textureLoader: MTKTextureLoader
     var flipKernelPipeline: MTLComputePipelineState?
     var ycbcrToRgbKernelPipeline: MTLComputePipelineState?
+    var twoVUYToRgbKernelPipeline: MTLComputePipelineState?
     var rgbToYuvKernelPipeline: MTLComputePipelineState?
     var i420ToRgbKernelPipeline: MTLComputePipelineState?
     var blurPipelineState: MTLComputePipelineState?
     let colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]
 
+    var destinationBuffer = vImage_Buffer()
+    var cgImageFormat = vImage_CGImageFormat(bitsPerComponent: 8,
+                                                          bitsPerPixel: 32,
+                                                          colorSpace: nil,
+                                                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue),
+                                                          version: 0,
+                                                          decode: nil,
+                                                          renderingIntent: .defaultIntent)
     
     public init() {
         do {
@@ -35,12 +45,14 @@ public actor MetalProcessor {
                 throw MetalScalingErrors.metalNotSupported
             }
             self.device = device
-            library = try device.makeDefaultLibrary(bundle: Bundle.module)
+            let library = try device.makeDefaultLibrary(bundle: Bundle.module)
+            self.library = library
             guard let commandQueue = device.makeCommandQueue() else {
                 throw MetalScalingErrors.errorSettingUpCommandQueue
             }
             self.commandQueue = commandQueue
             self.textureLoader = MTKTextureLoader(device: device)
+            _ = configureYpCbCrToARGBInfo()
         } catch {
             fatalError("Metal Not Supported: \(error)")
         }
@@ -82,10 +94,262 @@ public actor MetalProcessor {
         return metalTexture
     }
     
+    nonisolated(unsafe) internal var infoYpCbCrToARGB = vImage_YpCbCrToARGB()
+    
+    /// This method uses the Accelerate Framework into rder to set up the conversion of YUV data to RGB data
+    /// - Returns: A type for image errors.
+     nonisolated internal func configureYpCbCrToARGBInfo() -> vImage_Error {
+        var pixelRange = vImage_YpCbCrPixelRange(Yp_bias: 16,
+                                                 CbCr_bias: 128,
+                                                 YpRangeMax: 235,
+                                                 CbCrRangeMax: 240,
+                                                 YpMax: 235,
+                                                 YpMin: 16,
+                                                 CbCrMax: 240,
+                                                 CbCrMin: 16)
+        
+        let error = vImageConvert_YpCbCrToARGB_GenerateConversion(
+            kvImage_YpCbCrToARGBMatrix_ITU_R_709_2!,
+            &pixelRange,
+            &self.infoYpCbCrToARGB,
+            kvImage422CbYpCrYp8,
+            kvImageARGB8888,
+            vImage_Flags(kvImageNoFlags))
+        
+        return error
+    }
+
+    internal func convert2VUYToCVPixelBuffer(_ pixelBuffer: CVPixelBuffer, ciContext: CIContext) async throws -> CVPixelBuffer? {
+        _ = pixelBuffer.metalPixelFormat
+        var error = kvImageNoError
+        
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+
+        // Ensure the pixel format is 2VUY (YUV 4:2:2 interleaved)
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_422YpCbCr8 else {
+            throw NSError(domain: "Invalid pixel format", code: -1, userInfo: nil)
+        }
+
+        // Get base address of 2VUY data (interleaved YUV422)
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw NSError(domain: "Failed to get base address", code: -1, userInfo: nil)
+        }
+        
+        // Create source vImage buffer for 2VUY
+        var srcBuffer = vImage_Buffer(
+            data: baseAddress,
+            height: vImagePixelCount(height),
+            width: vImagePixelCount(width),
+            rowBytes: bytesPerRow
+        )
+        
+        // Allocate the destination buffer (RGB)
+        if destinationBuffer.data == nil {
+            error = vImageBuffer_Init(&destinationBuffer,
+                                      vImagePixelCount(height),
+                                      vImagePixelCount(width),
+                                      32, // 32-bit ARGB
+                                      vImage_Flags(kvImageNoFlags))
+            
+            guard error == kvImageNoError else {
+                return nil
+            }
+        }
+        
+        // Temporary vImage buffer pointing to destination
+        _ = vImage_Buffer(
+            data: destinationBuffer.data,
+            height: vImagePixelCount(height),
+            width: vImagePixelCount(width),
+            rowBytes: destinationBuffer.rowBytes
+        )
+     
+        // Perform YUV422 (2VUY) → RGB conversion
+        error = vImageConvert_422CbYpCrYp8ToARGB8888(
+               &srcBuffer,
+               &destinationBuffer,
+               &infoYpCbCrToARGB,
+               nil,  // No permute map
+               255,  // Full alpha
+               vImage_Flags(kvImageNoFlags)
+           )
+
+        guard error == kvImageNoError else {
+            throw NSError(domain: "vImage conversion failed", code: Int(error), userInfo: nil)
+        }
+
+        // Create a CVPixelBuffer for the RGB output
+        guard let outputPixelBuffer = try await createPixelBuffer(width: width, height: height, ciContext: ciContext) else {
+            throw NSError(domain: "Failed to create RGB pixel buffer", code: -1, userInfo: nil)
+        }
+        
+        CVBufferPropagateAttachments(pixelBuffer, outputPixelBuffer)
+        
+        let metadataKeys: [CFString] = [
+                kCVImageBufferYCbCrMatrixKey,
+                kCVImageBufferColorPrimariesKey,
+                kCVImageBufferTransferFunctionKey,
+                kCGImagePropertyExifDictionary
+            ]
+
+                    for key in metadataKeys {
+            if let value = CVBufferCopyAttachment(pixelBuffer, key, nil) {
+                CVBufferSetAttachment(outputPixelBuffer, key, value, .shouldPropagate)
+            }
+        }
+        
+        // Copy converted data into CVPixelBuffer
+        guard let outputCVImageFormat = vImageCVImageFormat.make(buffer: outputPixelBuffer) else {
+            throw vImage.Error.invalidCVImageFormat
+        }
+        
+        vImageCVImageFormat_SetColorSpace(outputCVImageFormat, CGColorSpaceCreateDeviceRGB())
+
+        error = vImageBuffer_CopyToCVPixelBuffer(
+            &destinationBuffer,
+            &cgImageFormat,
+            outputPixelBuffer,
+            outputCVImageFormat,
+            nil,
+            vImage_Flags(kvImageNoFlags)
+        )
+
+        guard error == kvImageNoError else {
+            throw NSError(domain: "vImageBuffer_CopyToCVPixelBuffer failed", code: Int(error), userInfo: nil)
+        }
+
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+        return outputPixelBuffer
+    }
+    
+    private let pixelAttributes = [
+        kCVPixelBufferIOSurfacePropertiesKey: [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCMSampleAttachmentKey_DisplayImmediately: true,
+        ]
+    ] as? CFDictionary
+    
+    internal func createPixelBuffer(width: Int, height: Int, ciContext: CIContext) async throws -> CVPixelBuffer? {
+        
+        var pixelBuffer: CVPixelBuffer? = nil
+        for await _ in withAutoreleasePool() {
+            CVPixelBufferCreate(
+                kCFAllocatorDefault,
+                width,
+                height,
+                kCVPixelFormatType_32BGRA,
+                pixelAttributes,
+                &pixelBuffer
+            )
+        }
+        
+        guard let pixelBuffer = pixelBuffer else {
+            fatalError("Always should procuce a pixel buffer")
+        }
+        return pixelBuffer
+    }
+    
+    func withAutoreleasePool() -> AsyncStream<Void> {
+        return AsyncStream { continuation in
+            autoreleasepool {
+                continuation.yield()
+                continuation.finish()
+            }
+        }
+    }
+
+    
+    fileprivate func convert2VUYToRGB(
+        cvPixelBuffer: CVPixelBuffer,
+        device: MTLDevice
+    ) throws -> MTLTexture {
+        
+        // Create a Metal texture cache if not already created
+        var textureCache: CVMetalTextureCache?
+        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
+              let cache = textureCache else {
+            throw MetalScalingErrors.failedToCreateTextureCache
+        }
+        
+        // Lock the base address of the CVPixelBuffer
+        guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly) else {
+            throw MetalScalingErrors.failedToLockPixelBuffer
+        }
+        
+        defer {
+            // Always unlock the CVPixelBuffer
+            CVPixelBufferUnlockBaseAddress(cvPixelBuffer, .readOnly)
+        }
+        
+        // Create a Metal texture for the interleaved YUV data
+        let yuvTexture = try createMTLTextureForPlane(
+            cvPixelBuffer: cvPixelBuffer,
+            planeIndex: 0, // Only one plane for 2vuy
+            textureCache: cache,
+            format: .bgrg422, // Adjust format as needed for your shader
+            device: device)
+        
+        // Create a Metal texture for RGB output
+        let rgbTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: CVPixelBufferGetWidth(cvPixelBuffer),
+            height: CVPixelBufferGetHeight(cvPixelBuffer),
+            mipmapped: false)
+        rgbTextureDescriptor.usage = [.shaderRead, .shaderWrite]
+
+        guard let rgbTexture = device.makeTexture(descriptor: rgbTextureDescriptor) else {
+            throw MetalScalingErrors.failedToCreateTexture
+        }
+
+        // Create a Metal compute pipeline with a shader that converts YUV to RGB
+        if twoVUYToRgbKernelPipeline == nil {
+            twoVUYToRgbKernelPipeline = try createComputePipeline(device: device, shaderName: "ycbcrToRGBKernel")
+        }
+        
+        // Set up a command buffer and encoder
+        guard let commandQueue = device.makeCommandQueue(),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalScalingErrors.errorSettingUpEncoder
+        }
+        
+        guard let twoVUYToRgbKernelPipeline = twoVUYToRgbKernelPipeline else {
+            throw MetalScalingErrors.failedToCreatePipeline
+        }
+    
+        // Set textures and encode the compute shader
+        computeEncoder.setComputePipelineState(twoVUYToRgbKernelPipeline)
+        computeEncoder.setTexture(yuvTexture, index: 0) // Use the interleaved YUV texture
+        computeEncoder.setTexture(rgbTexture, index: 1) // Output RGB texture
+        
+        let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
+
+        let threadgroups = MTLSize(
+            width: (rgbTexture.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+            height: (rgbTexture.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
+            depth: 1)
+
+        computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+        defer {
+            computeEncoder.endEncoding()
+            commandBuffer.commit()
+        }
+        
+        // Return the RGB texture
+        return rgbTexture
+    }
+    
     public func convertYUVToRGB(
         cvPixelBuffer: CVPixelBuffer,
         device: MTLDevice
     ) throws -> MTLTexture {
+        
         // Create a Metal texture cache if not already created
         var textureCache: CVMetalTextureCache?
         guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
@@ -192,11 +456,50 @@ public actor MetalProcessor {
             throw MetalScalingErrors.failedToCreateTextureCacheFromImage
         }
         
-        if let cache = cvTexture, let metalTexture = CVMetalTextureGetTexture(cache) {
+        if let cvTexture = cvTexture, let metalTexture = CVMetalTextureGetTexture(cvTexture) {
             return metalTexture
         } else {
             throw MetalScalingErrors.failedToGetTexture
         }
+    }
+    
+    // Converts an RGB CVPixelBuffer into an MTLTexture
+    func createRGBMTLTexture(
+        pixelBuffer: CVPixelBuffer,
+        device: MTLDevice
+    ) throws -> MTLTexture {
+        
+        // Create a Metal texture cache if not already created
+        var textureCache: CVMetalTextureCache?
+        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
+              let cache = textureCache else {
+            throw MetalScalingErrors.failedToCreateTextureCache
+        }
+        
+        // Lock the base address of the CVPixelBuffer
+        guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) else {
+            throw MetalScalingErrors.failedToLockPixelBuffer
+        }
+        
+        defer {
+            // Always unlock the CVPixelBuffer
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+        }
+        
+           // Ensure the PixelBuffer is in the correct format
+           let format = MTLPixelFormat.bgra8Unorm
+           guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+               throw NSError(domain: "Invalid pixel format for Metal texture", code: -1, userInfo: nil)
+           }
+
+           // Use the existing function but for the RGB plane (index 0)
+           return try createMTLTextureForPlane(
+               cvPixelBuffer: pixelBuffer,
+               planeIndex: 0,  // RGB data is in a single plane
+               textureCache: cache,
+               format: format,
+               device: device
+           )
     }
     
     public func convertRGBToYUV(rgbTexture: MTLTexture) throws -> (yTexture: MTLTexture, uvTexture: MTLTexture) {
@@ -329,14 +632,15 @@ public actor MetalProcessor {
     
     
     public func getAspectRatio(width: CGFloat, height: CGFloat) -> CGFloat {
-        let width = width
-        let height = height
-        if width > height {
-            return width / height
-        } else {
-            return height / width
-        }
+        return width / height
     }
+
+    let ciContext = CIContext(
+        options: [
+            .useSoftwareRenderer: false,
+            .cacheIntermediates: false
+        ]
+    )
     
 #if canImport(WebRTC)
     public func createMetalImage(
@@ -347,15 +651,24 @@ public actor MetalProcessor {
         aspectRatio: CGFloat
     ) async throws -> TextureInfo {
         if let pixelBuffer = pixelBuffer {
-            let texture = try convertYUVToRGB(
-                cvPixelBuffer: pixelBuffer,
-                device: self.device)
+            let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            var texture: MTLTexture!
+//            this is 2vuy(This happens on mac's camera capture)
+            if pixelFormatType == kCVPixelFormatType_422YpCbCr8 {
+                texture = try convert2VUYToRGB(
+                    cvPixelBuffer: pixelBuffer,
+                    device: self.device)
+            } else {
+                texture = try convertYUVToRGB(
+                    cvPixelBuffer: pixelBuffer,
+                    device: self.device)
+            }
+            
             let resizedTexture = try resizeImage(
                 sourceTexture: texture,
                 parentBounds: parentBounds,
                 scaleInfo: scaleInfo,
-                aspectRatio: aspectRatio
-            )
+                aspectRatio: aspectRatio)
             var info = try getTextureInfo(texture: resizedTexture)
             info.scaleX = scaleInfo.scaleX
             info.scaleY = scaleInfo.scaleY
@@ -531,6 +844,15 @@ public actor MetalProcessor {
         return UIImage(ciImage: orientedImage)
     }
 #elseif os(macOS)
+    
+    public func resizeAndConvertToNSImage(image: NSImage,
+                                          desiredSize: CGSize) async throws -> NSImage {
+        let imageTexture = try await resizeImage(
+            image: image,
+            desiredSize: desiredSize)
+        return await createImage(from: imageTexture)
+    }
+    
     public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> NSImage {
         guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError("Failed to create CIImage") }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
@@ -1004,12 +1326,11 @@ extension MetalProcessor {
         desiredSize: CGSize
     ) async throws -> MTLTexture {
         let originalSize = image.size
-        let aspectRatio = await getAspectRatio(width: originalSize.width, height: originalSize.height)
-        let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
-        
+        let aspectRatio = getAspectRatio(width: originalSize.width, height: originalSize.height)
+        let info = createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
         let textureInfo = try await resizeImage(
             image: image,
-            parentBounds: desiredSize,
+            parentBounds: info.size,
             scaleInfo: info,
             aspectRatio: aspectRatio
         )

@@ -4,10 +4,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "needletail-media-kit",
+    name: "NeedleTailMediaKit",
     platforms: [
-        .macOS(.v15),
-        .iOS(.v18),
+        .macOS(.v13),
+        .iOS(.v16),
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
@@ -19,16 +19,18 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "NeedleTailMediaKit"
-//            resources: [.process("Sources/NeedleTailMediaKit/MetalProcessor/Shaders/ImageShaders.metal")]
+            name: "NeedleTailMediaKit",
+            resources: [
+                .process("MetalProcessor/Shaders/ImageShaders.metal")
+            ]
         ),
         .testTarget(
-            name: "needletail-media-kitTests",
+            name: "NeedleTailMediaKitTests",
             dependencies: ["NeedleTailMediaKit"]),
     ]
 )
 
 #if os(iOS) || os(macOS)
-package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "130.0.0")))
+package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "136.0.0")))
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "WebRTC"))
 #endif

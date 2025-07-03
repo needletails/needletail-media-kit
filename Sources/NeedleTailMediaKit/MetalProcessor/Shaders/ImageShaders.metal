@@ -9,65 +9,94 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Define the kernel function
+kernel void ycbcrToRGBKernel(texture2d<float, access::read> yuvTexture [[ texture(0) ]],
+                              texture2d<float, access::write> rgbTexture [[ texture(1) ]],
+                              uint2 gid [[ thread_position_in_grid ]]) {
+    // Read the Y, Cb, and Cr values from the YUV texture
+    float y = yuvTexture.read(gid).y; // Y <-> y
+    float cb = yuvTexture.read(gid).z; // Cb <-> z
+    float cr = yuvTexture.read(gid).x; // Cr <-> x
+
+    // YCbCr to RGB conversion matrix
+    const float4x4 ycbcrToRGBTransform = float4x4(
+        float4(+1.0000f, +1.0000f, +1.0000f, +0.0000f),
+        float4(+0.0000f, -0.3441f, +1.7720f, +0.0000f),
+        float4(+1.4020f, -0.7141f, +0.0000f, +0.0000f),
+        float4(-0.7010f, +0.5291f, -0.8860f, +1.0000f)
+    );
+
+    // Convert YCbCr to RGB
+    float4 rgba = ycbcrToRGBTransform * float4(y, cb, cr, 1.0);
+
+    // Clamp the RGB values to the range [0, 1]
+    rgba = clamp(rgba, 0.0, 1.0);
+
+    // Write the RGB values to the output texture
+    rgbTexture.write(rgba, gid);
+}
+
+
 //BT.601 YUV
 kernel void rgbToYuvBt601(
-    texture2d<float, access::read> rgbTexture [[texture(0)]],
-    texture2d<float, access::write> yTexture [[texture(1)]],
-    texture2d<float, access::write> uvTexture [[texture(2)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    // Get RGB pixel value
-    float4 rgbPixel = rgbTexture.read(gid);
-    
-    // Convert RGB to YUV (ITU-R BT.601-4 coefficients)
-    float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
-    float u = -0.169 * rgbPixel.r - 0.331 * rgbPixel.g + 0.500 * rgbPixel.b + 0.5;
-    float v = 0.500 * rgbPixel.r - 0.419 * rgbPixel.g - 0.081 * rgbPixel.b + 0.5;
-
-    // Clamp U and V values to [0, 1] range
-    u = clamp(u, 0.0, 1.0);
-    v = clamp(v, 0.0, 1.0);
-
-    // Write Y value to Y texture
-    float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
-    yTexture.write(yValue, gid);
-    
-    // Pack U and V values into a single float4
-    float4 uvValue = float4(u, v, 0.0, 1.0);
-
-    // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
-}
+                          texture2d<float, access::read> rgbTexture [[texture(0)]],
+                          texture2d<float, access::write> yTexture [[texture(1)]],
+                          texture2d<float, access::write> uvTexture [[texture(2)]],
+                          uint2 gid [[thread_position_in_grid]]
+                          ) {
+                              // Get RGB pixel value
+                              float4 rgbPixel = rgbTexture.read(gid);
+                              
+                              // Convert RGB to YUV (ITU-R BT.601-4 coefficients)
+                              float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
+                              float u = -0.169 * rgbPixel.r - 0.331 * rgbPixel.g + 0.500 * rgbPixel.b + 0.5;
+                              float v = 0.500 * rgbPixel.r - 0.419 * rgbPixel.g - 0.081 * rgbPixel.b + 0.5;
+                              
+                              // Clamp U and V values to [0, 1] range
+                              u = clamp(u, 0.0, 1.0);
+                              v = clamp(v, 0.0, 1.0);
+                              
+                              // Write Y value to Y texture
+                              float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
+                              yTexture.write(yValue, gid);
+                              
+                              // Pack U and V values into a single float4
+                              float4 uvValue = float4(u, v, 0.0, 1.0);
+                              
+                              // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+                              uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
+                          }
 
 
 kernel void rgbToYuv(
-    texture2d<float, access::read> rgbTexture [[texture(0)]],
-    texture2d<float, access::write> yTexture [[texture(1)]],
-    texture2d<float, access::write> uvTexture [[texture(2)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    // Get RGB pixel value
-    float4 rgbPixel = rgbTexture.read(gid);
-    
-    // Convert RGB to YUV
-    float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
-    float u = -0.14713 * rgbPixel.r - 0.28886 * rgbPixel.g + 0.436 * rgbPixel.b + 0.5; // Adjusted U
-    float v = 0.615 * rgbPixel.r - 0.51499 * rgbPixel.g - 0.10001 * rgbPixel.b + 0.5; // Adjusted V
+                     texture2d<float, access::read> rgbTexture [[texture(0)]],
+                     texture2d<float, access::write> yTexture [[texture(1)]],
+                     texture2d<float, access::write> uvTexture [[texture(2)]],
+                     uint2 gid [[thread_position_in_grid]]
+                     ) {
+                         // Get RGB pixel value
+                         float4 rgbPixel = rgbTexture.read(gid);
+                         
+                         // Convert RGB to YUV
+                         float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
+                         float u = -0.14713 * rgbPixel.r - 0.28886 * rgbPixel.g + 0.436 * rgbPixel.b + 0.5; // Adjusted U
+                         float v = 0.615 * rgbPixel.r - 0.51499 * rgbPixel.g - 0.10001 * rgbPixel.b + 0.5; // Adjusted V
+                         
+                         // Clamp U and V values to [16, 240] range
+                         u = clamp(u * 255.0, 16.0, 240.0) / 255.0;
+                         v = clamp(v * 255.0, 16.0, 240.0) / 255.0;
+                         
+                         // Write Y value to Y texture
+                         float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
+                         yTexture.write(yValue, gid);
+                         
+                         // Pack U and V values into a single float4
+                         float4 uvValue = float4(u, v, 0.0, 1.0);
+                         
+                         // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+                         uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
+                     }
 
-    // Clamp U and V values to [16, 240] range
-    u = clamp(u * 255.0, 16.0, 240.0) / 255.0;
-    v = clamp(v * 255.0, 16.0, 240.0) / 255.0;
-
-    // Write Y value to Y texture
-    float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
-    yTexture.write(yValue, gid);
-    
-    // Pack U and V values into a single float4
-    float4 uvValue = float4(u, v, 0.0, 1.0);
-
-    // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
-}
 
 kernel void ycbcrToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
                        texture2d<float, access::read> uvTexture [[texture(1)]],
@@ -80,9 +109,14 @@ kernel void ycbcrToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
     float v = uvTexture.read(gid / 2).g - 0.5;
     
     // BT.601 YUV to RGB conversion
-    float r = y + 1.402 * v;
-    float g = y - 0.344136 * u - 0.714136 * v;
-    float b = y + 1.772 * u;
+    float r = y + 1.403 * v;
+    float g = y - 0.344 * u - 0.714 * v;
+    float b = y + 1.770 * u;
+    
+    // Clamp the RGB values to the range [0, 1]
+    r = clamp(r, 0.0, 1.0);
+    g = clamp(g, 0.0, 1.0);
+    b = clamp(b, 0.0, 1.0);
     
     // Write the RGB values to the output texture
     rgbTexture.write(float4(r, g, b, 1.0), gid);
@@ -188,9 +222,14 @@ kernel void combineYUVKernel(texture2d<float, access::read> yTexture [[texture(0
     float v = uvTexture.read(gid / 2).g - 0.5;
     
     // Combine YUV data into a single pixel
-    float r = y + 1.402 * v;
-    float g = y - 0.344136 * u - 0.714136 * v;
-    float b = y + 1.772 * u;
+    float r = y + 1.403 * v;
+    float g = y - 0.344 * u - 0.714 * v;
+    float b = y + 1.770 * u;
+    
+    // Clamp the RGB values to the range [0, 1]
+    r = clamp(r, 0.0, 1.0);
+    g = clamp(g, 0.0, 1.0);
+    b = clamp(b, 0.0, 1.0);
     
     // Write the combined pixel to the output texture
     combinedTexture.write(float4(r, g, b, 1.0), gid);

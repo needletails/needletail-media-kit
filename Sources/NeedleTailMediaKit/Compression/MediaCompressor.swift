@@ -16,7 +16,7 @@ public actor MediaCompressor {
         case failedToCreateExportSession, noVideoTrack
     }
     
-    public enum AVAssetExportPreset: String {
+    public enum AVAssetExportPreset: String, Sendable {
         case lowQuality = "AVAssetExportPresetLowQuality"
         case mediumQuality = "AVAssetExportPresetMediumQuality"
         case highestQuality = "AVAssetExportPresetHighestQuality"
@@ -53,8 +53,7 @@ public actor MediaCompressor {
         case appleM4V720pHD = "AVAssetExportPresetAppleM4V720pHD"
         case appleM4V1080pHD = "AVAssetExportPresetAppleM4V1080pHD"
         
-        //        func targetSize(for preset: AVAssetExportPreset) -> CGSize {
-        var targetSize: CGSize {
+        public var targetSize: CGSize {
             switch self {
             case .lowQuality:
                 return CGSize(width: 320, height: 240) // Low quality
@@ -133,31 +132,29 @@ public actor MediaCompressor {
     nonisolated public func compressMedia(
         inputURL: URL,
         presetName: AVAssetExportPreset,
+        originalResolution: CGSize,
         fileType: AVFileType,
-        outputFileType: AVFileType,
-        isPortrait: Bool
+        outputFileType: AVFileType
     ) async throws -> URL {
         let tempDirectory = FileManager.default.temporaryDirectory
         let outputURL = tempDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(fileType.rawValue)
         
-        let asset = AVAsset(url: inputURL)
+        let asset = AVURLAsset(url: inputURL)
         
         // Check for video tracks
-        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        guard let videoTrack = tracks.first else {
             throw CompressionErrors.noVideoTrack
         }
         
-        let videoComposition = try await createComposition(
-            asset: asset,
-            track: videoTrack,
-            targetSize: presetName.targetSize)
+        let targetSize = await scaledResolution(for: originalResolution, using: presetName)
         
-        if isPortrait {
-            videoComposition.renderSize = CGSize(width: presetName.targetSize.height, height: presetName.targetSize.width)
-        } else {
-            videoComposition.renderSize = presetName.targetSize
-        }
-
+        let videoComposition = try await createVideoComposition(
+            for: asset,
+            using: videoTrack,
+            targetSize: targetSize)
+        
+        videoComposition.renderSize = targetSize
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: presetName.rawValue) else {
             throw CompressionErrors.failedToCreateExportSession
         }
@@ -167,62 +164,87 @@ public actor MediaCompressor {
         exportSession.metadata = []
         
         // Start the export process
-        try await exportSession.export(to: outputURL, as: outputFileType, isolation: self)
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = outputFileType
         
-        return outputURL
+        await exportSession.export()
+        
+        if exportSession.status == .completed {
+            return outputURL
+        } else if let error = exportSession.error {
+            throw error
+        } else {
+            throw CompressionErrors.failedToCreateExportSession
+        }
     }
-
-    nonisolated func createComposition(
-        asset: AVAsset,
-        track: AVAssetTrack,
+    
+    func scaledResolution(for originalSize: CGSize, using preset: MediaCompressor.AVAssetExportPreset) -> CGSize {
+        let isPortrait = originalSize.height > originalSize.width
+        let presetSize = preset.targetSize
+        let originalArea = originalSize.width * originalSize.height
+        let presetArea = presetSize.width * presetSize.height
+        
+        // If the original area is smaller than the preset area, no scaling is needed.
+        if originalArea < presetArea {
+            return originalSize
+        } else if isPortrait && originalArea > presetArea {
+            // For portrait videos, swap the preset dimensions to preserve orientation.
+            return CGSize(width: presetSize.height, height: presetSize.width)
+        } else {
+            return presetSize
+        }
+    }
+    
+    nonisolated func createVideoComposition(
+        for asset: AVAsset,
+        using track: AVAssetTrack,
         targetSize: CGSize
     ) async throws -> AVMutableVideoComposition {
+        
         return try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-            // Get the source image from the request
-            let source = request.sourceImage.extent
-            var mutableSize = targetSize
             
-            // Get the original size of the source image
-            let originalSize = CGSize(width: source.width, height: source.height)
-            if originalSize.height > originalSize.width {
-                mutableSize.width = targetSize.height
-                mutableSize.height = targetSize.width
-            }
-
-            // Calculate the scale factors for width and height
-            let scaleX = mutableSize.width / originalSize.width
-            let scaleY = mutableSize.height / originalSize.height
-            let scale = min(scaleX, scaleY) // Maintain aspect ratio
+            // Extract the original source image's extent
+            let sourceExtent = request.sourceImage.extent
+            let originalSize = CGSize(width: sourceExtent.width, height: sourceExtent.height)
             
-            // Create the filter and set the input values
-            let filter = CIFilter(name: "CILanczosScaleTransform")
-            filter?.setValue(request.sourceImage, forKey: kCIInputImageKey)
-            filter?.setValue(scale, forKey: kCIInputScaleKey) // Set the scale factor
-            filter?.setValue(1.0, forKey: kCIInputAspectRatioKey) // Maintain aspect ratio
+            // Calculate scale factors along each axis and choose the lesser value
+            // This maintains the original aspect ratio.
+            let scaleX = targetSize.width / originalSize.width
+            let scaleY = targetSize.height / originalSize.height
+            let scaleFactor = min(scaleX, scaleY)
             
-            // Get the output image from the filter
-            guard let resultImage = filter?.outputImage else {
-                print("Result image is nil")
-                request.finish(with: CIImage(), context: nil) // Finish with an empty image
+            // Set up the Lanczos scale transform filter.
+            guard let scaleFilter = CIFilter(name: "CILanczosScaleTransform") else {
+                // Finish with an empty image if the filter failed to instantiate.
+                request.finish(with: CIImage(), context: nil)
                 return
             }
             
-            // Calculate the new size after scaling
-            let scaledWidth = originalSize.width * scale
-            let scaledHeight = originalSize.height * scale
+            scaleFilter.setValue(request.sourceImage, forKey: kCIInputImageKey)
+            scaleFilter.setValue(scaleFactor, forKey: kCIInputScaleKey)
+            scaleFilter.setValue(1.0, forKey: kCIInputAspectRatioKey) // Lock aspect ratio
             
-            // Calculate the position to center the image
-            let xOffset = (mutableSize.width - scaledWidth) / 2
-            let yOffset = (mutableSize.height - scaledHeight) / 2
+            // Retrieve the filtered output image.
+            guard let scaledImage = scaleFilter.outputImage else {
+                // Finish the request with an empty image in case of error.
+                request.finish(with: CIImage(), context: nil)
+                return
+            }
             
-            // Create a transform to center the image
-            let transform = CGAffineTransform(translationX: xOffset, y: yOffset)
-            let centeredImage = resultImage.transformed(by: transform)
+            // Compute new dimensions after scaling.
+            let scaledWidth = originalSize.width * scaleFactor
+            let scaledHeight = originalSize.height * scaleFactor
             
+            // Center the scaled image within the adjusted target size.
+            let xOffset = (targetSize.width - scaledWidth) / 2.0
+            let yOffset = (targetSize.height - scaledHeight) / 2.0
+            let centeringTransform = CGAffineTransform(translationX: xOffset, y: yOffset)
+            let centeredImage = scaledImage.transformed(by: centeringTransform)
             
-            // Finish the request with the result image
+            // Provide the final composed image to finish the request.
             request.finish(with: centeredImage, context: nil)
         }
     }
+    
 }
 #endif

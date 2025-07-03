@@ -1,3 +1,10 @@
+//
+//  CVPixelBuffer+Extension.swift
+//  NeedleTail
+//
+//  Created by Cole M on 8/6/23.
+//
+
 #if os(macOS) || os(iOS)
 import CoreImage
 

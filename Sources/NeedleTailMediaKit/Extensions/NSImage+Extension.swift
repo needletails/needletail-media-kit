@@ -11,6 +11,7 @@ public enum ImageType {
 
 #if os(macOS)
 import Cocoa
+import UniformTypeIdentifiers
 
 extension NSView {
     public func toImage() -> NSImage? {
@@ -176,13 +177,25 @@ extension NSImage {
     }
     
     public func jpegData(
-        size: CGSize,
+        maxSize: CGSize,
         imageInterpolation: NSImageInterpolation = .high
     ) -> Data? {
+        // Get the original size
+        let originalSize = self.size
+        let aspectRatio = originalSize.width / originalSize.height
+        
+        // Calculate the new size while maintaining the aspect ratio
+        var targetSize: CGSize
+        if aspectRatio > 1 { // Landscape
+            targetSize = CGSize(width: maxSize.width, height: maxSize.width / aspectRatio)
+        } else { // Portrait or square
+            targetSize = CGSize(width: maxSize.height * aspectRatio, height: maxSize.height)
+        }
+        
         guard let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: Int(size.width),
-            pixelsHigh: Int(size.height),
+            pixelsWide: Int(targetSize.width),
+            pixelsHigh: Int(targetSize.height),
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -195,12 +208,12 @@ extension NSImage {
             return nil
         }
         
-        bitmap.size = size
+        bitmap.size = targetSize
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
         NSGraphicsContext.current?.imageInterpolation = imageInterpolation
         draw(
-            in: NSRect(origin: .zero, size: size),
+            in: NSRect(origin: .zero, size: targetSize),
             from: .zero,
             operation: .copy,
             fraction: 1.0
@@ -209,7 +222,7 @@ extension NSImage {
         
         return bitmap.representation(using: .jpeg, properties: [:])
     }
-
+    
     public func roundCorners(withRadius radius: CGFloat) -> NSImage {
         let rect = NSRect(origin: NSPoint.zero, size: size)
         if
@@ -235,7 +248,7 @@ extension NSImage {
         
         return self
     }
-
+    
     public func stripped(type: ImageType) throws -> NSImage {
         // Ensure we have TIFF representation
         guard let tiffData = self.tiffRepresentation else {
@@ -253,7 +266,7 @@ extension NSImage {
         }
         
         // Create a destination for the PNG data
-        guard let destination = CGImageDestinationCreateWithData(mutableData, type == .png ? kUTTypePNG : kUTTypeJPEG, 1, nil) else {
+        guard let destination = CGImageDestinationCreateWithData(mutableData, type == .png ? UTType.png.identifier as CFString : UTType.jpeg.identifier as CFString, 1, nil) else {
             throw ImageErrors.imageCreationFailed("Unable to create CGImageDestination.")
         }
         
@@ -280,5 +293,5 @@ extension NSImage {
     
 }
 
-extension NSImage: @unchecked Sendable {}
+extension NSImage: @retroactive @unchecked Sendable {}
 #endif
