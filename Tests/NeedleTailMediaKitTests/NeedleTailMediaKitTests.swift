@@ -1,10 +1,11 @@
+#if canImport(NeedleTailMediaKit)
+@testable import NeedleTailMediaKit
 import Foundation
 import CoreGraphics
 import ImageIO
 import CoreVideo
 import CoreMedia
 import Testing
-@testable import NeedleTailMediaKit
 
 actor MediaKitTests {
     // MARK: - ImageProcessor Tests
@@ -206,3 +207,4 @@ actor MediaKitTests {
         return mutableData as Data
     }
 }
+#endif

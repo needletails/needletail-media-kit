@@ -9,7 +9,7 @@ public enum ImageType {
     case png, jpg
 }
 
-#if os(macOS)
+#if os(macOS) && canImport(Cocoa)
 import Cocoa
 import UniformTypeIdentifiers
 

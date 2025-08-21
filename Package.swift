@@ -30,7 +30,7 @@ let package = Package(
     ]
 )
 
-#if os(iOS) || os(macOS)
-package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "136.0.0")))
+#if os(iOS) || os(macOS) && !os(Android)
+package.dependencies.append(.package(url: "https://github.com/stasel/WebRTC.git", .upToNextMajor(from: "138.0.0")))
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "WebRTC"))
 #endif

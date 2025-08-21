@@ -1,4 +1,4 @@
-#if os(iOS) || os(macOS)
+#if canImport(Metal) && canImport(Accelerate) && canImport(Vision)
 //
 //  MetalProcessor.swift
 //
@@ -7,9 +7,9 @@
 //
 @preconcurrency import Metal
 @preconcurrency import MetalPerformanceShaders
+@preconcurrency import Accelerate
 import MetalKit
 import CoreMedia.CMTime
-@preconcurrency import Accelerate
 import Vision
 
 public actor MetalProcessor {
@@ -827,13 +827,15 @@ public actor MetalProcessor {
         }
         
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { throw MetalScalingErrors.errorSettingUpCommandQueue }
-        defer {
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-        }
+
         filter.encode(commandBuffer: commandBuffer,
                       sourceTexture: sourceTexture,
                       destinationTexture: destTexture)
+        
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+//        await commandBuffer.completed()
+        
         return destTexture
     }
     
@@ -1695,11 +1697,6 @@ extension UIImage {
 }
 #endif
 
-public enum ScaleMode: Sendable {
-    case aspectFitVertical, aspectFitHorizontal, aspectFill, none
-}
-#endif
-
 #if os(macOS)
 extension NSImage {
     var bitsPerPixel: Int? {
@@ -1742,3 +1739,8 @@ extension NSImage {
     }
 }
 #endif
+#endif
+
+public enum ScaleMode: Sendable {
+    case aspectFitVertical, aspectFitHorizontal, aspectFill, none
+}

@@ -4,7 +4,7 @@
 //
 //  Created by Cole M on 8/25/24.
 //
-#if os(iOS) || os(macOS)
+#if os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
 import AVFoundation
 import CoreImage
 
