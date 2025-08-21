@@ -1,4 +1,4 @@
-#if os(macOS) || os(iOS)
+#if canImport(Accelerate) && canImport(CoreImage)
 //
 //  ImageProcessor.swift
 //  NeedleTailMediaKit

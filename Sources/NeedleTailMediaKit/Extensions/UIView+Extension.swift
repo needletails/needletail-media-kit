@@ -5,7 +5,7 @@
 //  Created by Cole M on 8/7/23.
 //
 
-#if os(iOS)
+#if os(iOS) && canImport(UIKit)
 import UIKit
 import UniformTypeIdentifiers
 
