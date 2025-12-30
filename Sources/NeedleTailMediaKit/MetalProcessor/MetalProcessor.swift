@@ -45,8 +45,18 @@ public actor MetalProcessor {
                 throw MetalScalingErrors.metalNotSupported
             }
             self.device = device
-            let library = try device.makeDefaultLibrary(bundle: Bundle.module)
-            self.library = library
+
+            do {
+                self.library = try device.makeDefaultLibrary(bundle: Bundle.module)
+            } catch {
+                // SwiftPM/Xcode sometimes won't produce a default metallib for package resources.
+                // Fall back to compiling the bundled .metal source at runtime.
+                guard let shaderURL = Bundle.module.url(forResource: "ImageShaders", withExtension: "metal") else {
+                    throw error
+                }
+                let source = try String(contentsOf: shaderURL, encoding: .utf8)
+                self.library = try device.makeLibrary(source: source, options: nil)
+            }
             guard let commandQueue = device.makeCommandQueue() else {
                 throw MetalScalingErrors.errorSettingUpCommandQueue
             }
@@ -632,6 +642,7 @@ public actor MetalProcessor {
     
     
     public func getAspectRatio(width: CGFloat, height: CGFloat) -> CGFloat {
+        guard height != 0 else { return 0 }
         return width / height
     }
 
@@ -833,8 +844,7 @@ public actor MetalProcessor {
                       destinationTexture: destTexture)
         
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-//        await commandBuffer.completed()
+        await commandBuffer.completed()
         
         return destTexture
     }

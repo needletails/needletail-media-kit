@@ -1,4 +1,6 @@
-#if canImport(NeedleTailMediaKit)
+// These tests exercise Apple-framework-backed implementations (CoreGraphics/ImageIO/CoreVideo/etc).
+// The Android toolchain used by `skip android test` does not provide these modules.
+#if canImport(NeedleTailMediaKit) && !os(Android)
 @testable import NeedleTailMediaKit
 import Foundation
 import CoreGraphics
@@ -160,6 +162,52 @@ actor MediaKitTests {
         #expect(noneInfo.size == originalSize)
         #expect(noneInfo.scaleX == 1.0)
         #expect(noneInfo.scaleY == 1.0)
+    }
+
+    // MARK: - MediaCompressor Tests
+
+    @available(macOS 13.0, iOS 16.0, *)
+    @Test("MediaCompressor scaledResolution calculation works correctly")
+    func testMediaCompressorScaledResolution() async {
+        let compressor = MediaCompressor()
+        let originalSize = CGSize(width: 1920, height: 1080)
+        
+        // Test downscaling
+        let scaled640 = await compressor.scaledResolution(for: originalSize, using: .resolution640x480)
+        #expect(scaled640.width == 640)
+        #expect(scaled640.height == 480)
+        
+        // Test portrait orientation preservation
+        let portraitOriginal = CGSize(width: 1080, height: 1920)
+        let scaledPortrait = await compressor.scaledResolution(for: portraitOriginal, using: .resolution640x480)
+        #expect(scaledPortrait.width == 480)
+        #expect(scaledPortrait.height == 640)
+        
+        // Test when original is smaller than preset
+        let smallOriginal = CGSize(width: 320, height: 240)
+        let scaledSmall = await compressor.scaledResolution(for: smallOriginal, using: .resolution1920x1080)
+        #expect(scaledSmall.width == 320)
+        #expect(scaledSmall.height == 240)
+    }
+
+    @available(macOS 13.0, iOS 16.0, *)
+    @Test("MediaCompressor handles different preset types")
+    func testMediaCompressorPresets() async {
+        let compressor = MediaCompressor()
+        let testSize = CGSize(width: 1920, height: 1080)
+        
+        // Test various presets
+        let lowQuality = await compressor.scaledResolution(for: testSize, using: .lowQuality)
+        #expect(lowQuality.width <= testSize.width)
+        #expect(lowQuality.height <= testSize.height)
+        
+        let mediumQuality = await compressor.scaledResolution(for: testSize, using: .mediumQuality)
+        #expect(mediumQuality.width <= testSize.width)
+        #expect(mediumQuality.height <= testSize.height)
+        
+        let highestQuality = await compressor.scaledResolution(for: testSize, using: .highestQuality)
+        #expect(highestQuality.width <= testSize.width)
+        #expect(highestQuality.height <= testSize.height)
     }
 
     // MARK: - Error Handling Tests

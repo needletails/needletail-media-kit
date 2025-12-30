@@ -60,19 +60,19 @@ NeedleTail Media Kit is a high-performance, enterprise-ready media processing li
 
 ### Getting Started
 
-- [Getting Started](GettingStarted.md) - Quick start guide
-- [Installation](Deployment.md) - How to add the library to your project
+- [Getting Started](Sources/NeedleTailMediaKit/Documentation.docc/GettingStarted.md) - Quick start guide
+- [Installation](Sources/NeedleTailMediaKit/Documentation.docc/Deployment.md) - How to add the library to your project
 
 ### Core Components
 
-- [MediaCompressor](MediaCompressor.md) - Video compression API
-- [ImageProcessor](ImageProcessor.md) - Image processing API
-- [API Reference](API_REFERENCE.md) - Complete API documentation
+- [MediaCompressor](Sources/NeedleTailMediaKit/Documentation.docc/MediaCompressor.md) - Video compression API
+- [ImageProcessor](Sources/NeedleTailMediaKit/Documentation.docc/ImageProcessor.md) - Image processing API
+- [API Reference](Sources/NeedleTailMediaKit/Documentation.docc/APIReference.md) - Complete API documentation
 
 ### Advanced Usage
 
-- [Performance Optimization](PerformanceOptimization.md) - Performance optimization techniques
-- [Enterprise Integration](EnterpriseIntegration.md) - Integration patterns for enterprise applications 
+- [Performance Optimization](Sources/NeedleTailMediaKit/Documentation.docc/PerformanceOptimization.md) - Performance optimization techniques
+- [Enterprise Integration](Sources/NeedleTailMediaKit/Documentation.docc/EnterpriseIntegration.md) - Integration patterns for enterprise applications 
 
 ## Contributing
 
