@@ -1,4 +1,3 @@
-#if canImport(Accelerate) && canImport(CoreImage)
 //
 //  ImageProcessor.swift
 //  NeedleTailMediaKit
@@ -7,9 +6,13 @@
 //
 
 import Foundation
+#if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Accelerate
+import ImageIO
+import UniformTypeIdentifiers
+#endif
 
 public enum ImageErrors: Error, LocalizedError, Sendable {
     case imageCreationFailed(String)
@@ -31,29 +34,60 @@ public enum ImageErrors: Error, LocalizedError, Sendable {
     }
 }
 
-/// A high-performance image processor for iOS and macOS applications.
-/// Provides image resizing, filtering, and processing capabilities using Core Image and Accelerate frameworks.
+/// A high-performance cross-platform image processor.
+/// Provides image resizing, filtering, and processing capabilities.
+/// On Apple platforms, uses Core Image and Accelerate frameworks.
+/// On Android, uses Android Bitmap APIs (transpiled via Skip Swift).
 @available(macOS 13.0, iOS 16.0, *)
 public actor ImageProcessor {
     
+    #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
     private let ciContext: CIContext
+    #endif
+    
+    #if SKIP || os(Android)
+    private let androidProcessor: AndroidImageProcessor
+    #endif
     
     public init() {
+        #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
         self.ciContext = CIContext()
+        #endif
+        #if SKIP || os(Android)
+        self.androidProcessor = AndroidImageProcessor()
+        #endif
     }
+
+    #if SKIP || os(Android)
+    private nonisolated func mapAndroidError(_ error: AndroidImageProcessor.ImageErrors) -> ImageErrors {
+        switch error {
+        case .imageCreationFailed(let message):
+            return .imageCreationFailed(message)
+        case .imageProcessingFailed(let message):
+            return .imageProcessingFailed(message)
+        case .invalidImageData:
+            return .invalidImageData
+        case .unsupportedImageFormat:
+            return .unsupportedImageFormat
+        }
+    }
+    #endif
     
     /// Resizes an image to the specified dimensions while maintaining aspect ratio
     /// - Parameters:
     ///   - image: The input image data
     ///   - targetSize: The desired output size
-    ///   - quality: The interpolation quality (default: .high)
+    ///   - quality: The interpolation quality (default: .high on Apple, 2 on Android)
     /// - Returns: The resized image data
     /// - Throws: ImageErrors if processing fails
+    #if !SKIP && !os(Android)
     public func resizeImage(
         _ image: Data,
         to targetSize: CGSize,
         quality: CGInterpolationQuality = .high
     ) async throws -> Data {
+        #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        // Use Apple implementation
         guard let ciImage = CIImage(data: image) else {
             throw ImageErrors.invalidImageData
         }
@@ -74,7 +108,29 @@ public actor ImageProcessor {
         }
         
         return imageData
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
     }
+    #else
+    public func resizeImage(
+        _ image: Data,
+        to targetSize: CGSize,
+        quality: Int = 2
+    ) async throws -> Data {
+        #if SKIP || os(Android)
+        // Call into SKIP-transpiled Android implementation
+        // When SKIP transpiles, this block is included in the Kotlin code
+        do {
+            return try await androidProcessor.resizeImage(image, to: targetSize, quality: quality)
+        } catch let error as AndroidImageProcessor.ImageErrors {
+            throw mapAndroidError(error)
+        }
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
+    }
+    #endif
     
     /// Applies a blur effect to an image
     /// - Parameters:
@@ -86,6 +142,15 @@ public actor ImageProcessor {
         to image: Data,
         radius: Double = 10.0
     ) async throws -> Data {
+        #if SKIP || os(Android)
+        // Call into SKIP-transpiled Android implementation
+        do {
+            return try await androidProcessor.applyBlur(to: image, radius: radius)
+        } catch let error as AndroidImageProcessor.ImageErrors {
+            throw mapAndroidError(error)
+        }
+        #elseif canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        // Use Apple implementation
         guard let ciImage = CIImage(data: image) else {
             throw ImageErrors.invalidImageData
         }
@@ -107,6 +172,9 @@ public actor ImageProcessor {
         }
         
         return imageData
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
     }
     
     /// Applies a sepia tone effect to an image
@@ -119,6 +187,15 @@ public actor ImageProcessor {
         to image: Data,
         intensity: Double = 0.8
     ) async throws -> Data {
+        #if SKIP || os(Android)
+        // Call into SKIP-transpiled Android implementation
+        do {
+            return try await androidProcessor.applySepia(to: image, intensity: intensity)
+        } catch let error as AndroidImageProcessor.ImageErrors {
+            throw mapAndroidError(error)
+        }
+        #elseif canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        // Use Apple implementation
         guard let ciImage = CIImage(data: image) else {
             throw ImageErrors.invalidImageData
         }
@@ -140,6 +217,9 @@ public actor ImageProcessor {
         }
         
         return imageData
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
     }
     
     /// Adjusts the brightness and contrast of an image
@@ -154,6 +234,15 @@ public actor ImageProcessor {
         brightness: Double = 0.0,
         contrast: Double = 1.0
     ) async throws -> Data {
+        #if SKIP || os(Android)
+        // Call into SKIP-transpiled Android implementation
+        do {
+            return try await androidProcessor.adjustBrightnessContrast(image: image, brightness: brightness, contrast: contrast)
+        } catch let error as AndroidImageProcessor.ImageErrors {
+            throw mapAndroidError(error)
+        }
+        #elseif canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        // Use Apple implementation
         guard let ciImage = CIImage(data: image) else {
             throw ImageErrors.invalidImageData
         }
@@ -176,6 +265,9 @@ public actor ImageProcessor {
         }
         
         return imageData
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
     }
     
     /// Converts an image to grayscale using color controls
@@ -183,6 +275,15 @@ public actor ImageProcessor {
     /// - Returns: The grayscale image data
     /// - Throws: ImageErrors if processing fails
     public func convertToGrayscale(_ image: Data) async throws -> Data {
+        #if SKIP || os(Android)
+        // Call into SKIP-transpiled Android implementation
+        do {
+            return try await androidProcessor.convertToGrayscale(image)
+        } catch let error as AndroidImageProcessor.ImageErrors {
+            throw mapAndroidError(error)
+        }
+        #elseif canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        // Use Apple implementation
         guard let ciImage = CIImage(data: image) else {
             throw ImageErrors.invalidImageData
         }
@@ -204,14 +305,27 @@ public actor ImageProcessor {
         }
         
         return imageData
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
     }
 }
 
 // MARK: - CGImage Extension for PNG Data
+#if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
 private extension CGImage {
     func pngData() -> Data? {
-        guard let dataProvider = dataProvider,
-              let data = dataProvider.data else {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, self, nil)
+        guard CGImageDestinationFinalize(destination) else {
             return nil
         }
         return data as Data

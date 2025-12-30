@@ -4,17 +4,112 @@
 //
 //  Created by Cole M on 8/25/24.
 //
+import Foundation
 #if os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
 import AVFoundation
 import CoreImage
+import UniformTypeIdentifiers
+#endif
+
+/// Cross-platform file type representation
+/// On Apple: Uses AVFileType from AVFoundation
+/// On Android: Uses String since AVFileType is not available
+#if os(Android)
+public typealias MediaFileType = String
+#elseif canImport(AVFoundation)
+public typealias MediaFileType = AVFileType
+#else
+// Fallback for platforms without AVFoundation
+public typealias MediaFileType = String
+#endif
 
 public actor MediaCompressor {
     
-    public init() {}
+    #if os(Android)
+    private let androidCompressor: AndroidMediaCompressor
+    #endif
     
-    enum CompressionErrors: Error {
-        case failedToCreateExportSession, noVideoTrack
+    public init() {
+        #if os(Android)
+        self.androidCompressor = AndroidMediaCompressor()
+        #endif
     }
+    
+    public enum CompressionErrors: Error, Sendable {
+        case failedToCreateExportSession, noVideoTrack
+        case unsupportedPlatform
+    }
+    
+    /// Helper to extract file type string from AVFileType in a cross-platform way
+    /// On Apple platforms, extracts the rawValue from AVFileType
+    /// On Android, infers from URL extension or uses defaults since AVFileType is not available
+    #if os(Android)
+    private nonisolated func fileTypeString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // On Android, MediaFileType is String, so we can use it directly or infer from extension
+        // If it's already a MIME type, return it; otherwise infer from extension
+        if fileType.contains("/") {
+            return fileType // Already a MIME type
+        }
+        // Return MIME type based on common video formats
+        switch defaultExtension.lowercased() {
+        case "mp4", "m4v":
+            return "video/mp4"
+        case "mov":
+            return "video/quicktime"
+        case "3gp":
+            return "video/3gpp"
+        case "3g2":
+            return "video/3gpp2"
+        default:
+            return "video/mp4" // Default to MPEG-4
+        }
+    }
+    
+    private nonisolated func fileExtensionString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // On Android, MediaFileType is String
+        // If it's a file extension, return it; otherwise use default
+        if !fileType.contains("/") && !fileType.contains(".") {
+            // Looks like a simple extension
+            return fileType
+        }
+        // Return file extension based on common video formats
+        switch defaultExtension.lowercased() {
+        case "mp4", "m4v", "mov", "3gp", "3g2":
+            return defaultExtension
+        default:
+            return "mp4" // Default to MP4
+        }
+    }
+    #elseif canImport(AVFoundation)
+    private nonisolated func fileTypeString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // Extract rawValue from AVFileType on Apple platforms
+        return fileType.rawValue
+    }
+    
+    private nonisolated func fileExtensionString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // Convert AVFileType to file extension on Apple platforms
+        let rawValue = fileType.rawValue
+        #if canImport(UniformTypeIdentifiers)
+        if let utType = UTType(rawValue) {
+            if let ext = utType.preferredFilenameExtension {
+                return ext
+            }
+        }
+        #endif
+        return defaultExtension
+    }
+    #else
+    // Fallback for platforms without AVFoundation
+    private nonisolated func fileTypeString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // On platforms without AVFoundation, MediaFileType is String
+        return fileType
+    }
+    
+    private nonisolated func fileExtensionString(from fileType: MediaFileType, defaultExtension: String = "mp4") -> String {
+        // On platforms without AVFoundation, MediaFileType is String
+        return fileType.isEmpty ? defaultExtension : fileType
+    }
+    #endif
     
     public enum AVAssetExportPreset: String, Sendable {
         case lowQuality = "AVAssetExportPresetLowQuality"
@@ -126,18 +221,41 @@ public actor MediaCompressor {
     /// - Parameters:
     ///   - inputURL: Media URL
     ///   - presetName: The quality desired to create
+    ///   - originalResolution: The original video resolution
     ///   - fileType: The media type
+    ///   - outputFileType: The output file type
     /// - Throws: Potential Errors if we are experiencing an issue in the export session
     /// - Returns: The Compressed URL of the export session
     nonisolated public func compressMedia(
         inputURL: URL,
         presetName: AVAssetExportPreset,
         originalResolution: CGSize,
-        fileType: AVFileType,
-        outputFileType: AVFileType
+        fileType: MediaFileType,
+        outputFileType: MediaFileType
     ) async throws -> URL {
+        #if os(Android)
+        // Call into SKIP-transpiled Android implementation
+        // On Android, MediaFileType is String, so we can use it directly
+        let inputExtension = inputURL.pathExtension.isEmpty ? "mp4" : inputURL.pathExtension
+        let fileTypeStr = fileTypeString(from: fileType, defaultExtension: inputExtension)
+        let outputExtension = fileExtensionString(from: outputFileType, defaultExtension: "mp4")
+        
+        let androidPreset = mapToAndroidPreset(presetName)
+        return try await androidCompressor.compressMedia(
+            inputURL: inputURL,
+            presetName: androidPreset,
+            originalResolution: originalResolution,
+            fileType: fileTypeStr,
+            outputFileType: outputExtension
+        )
+        #elseif os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
+        // Use Apple implementation
         let tempDirectory = FileManager.default.temporaryDirectory
-        let outputURL = tempDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(fileType.rawValue)
+
+        let outputExtension = UTType(outputFileType.rawValue)?.preferredFilenameExtension
+        let outputURL = tempDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(outputExtension ?? "mp4")
         
         let asset = AVURLAsset(url: inputURL)
         
@@ -176,7 +294,37 @@ public actor MediaCompressor {
         } else {
             throw CompressionErrors.failedToCreateExportSession
         }
+        #else
+        throw CompressionErrors.unsupportedPlatform
+        #endif
     }
+    
+    #if os(Android)
+    /// Maps Apple AVAssetExportPreset to Android CompressionPreset
+    private nonisolated func mapToAndroidPreset(_ preset: AVAssetExportPreset) -> AndroidMediaCompressor.CompressionPreset {
+        switch preset {
+        case .lowQuality:
+            return .lowQuality
+        case .mediumQuality:
+            return .mediumQuality
+        case .highestQuality:
+            return .highestQuality
+        case .resolution640x480:
+            return .resolution640x480
+        case .resolution960x540:
+            return .resolution960x540
+        case .resolution1280x720:
+            return .resolution1280x720
+        case .resolution1920x1080:
+            return .resolution1920x1080
+        case .resolution3840x2160:
+            return .resolution3840x2160
+        default:
+            // Map HEVC and other presets to closest Android equivalent
+            return .highestQuality
+        }
+    }
+    #endif
     
     func scaledResolution(for originalSize: CGSize, using preset: MediaCompressor.AVAssetExportPreset) -> CGSize {
         let isPortrait = originalSize.height > originalSize.width
@@ -195,6 +343,7 @@ public actor MediaCompressor {
         }
     }
     
+    #if os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
     nonisolated func createVideoComposition(
         for asset: AVAsset,
         using track: AVAssetTrack,
@@ -245,6 +394,5 @@ public actor MediaCompressor {
             request.finish(with: centeredImage, context: nil)
         }
     }
-    
+    #endif
 }
-#endif

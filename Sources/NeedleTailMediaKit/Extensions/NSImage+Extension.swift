@@ -292,6 +292,4 @@ extension NSImage {
     }
     
 }
-
-extension NSImage: @retroactive @unchecked Sendable {}
 #endif
