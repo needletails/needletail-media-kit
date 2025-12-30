@@ -80,7 +80,7 @@ public actor ImageProcessor {
     ///   - quality: The interpolation quality (default: .high on Apple, 2 on Android)
     /// - Returns: The resized image data
     /// - Throws: ImageErrors if processing fails
-    #if !SKIP && !os(Android)
+    #if !SKIP && !os(Android) && !os(Linux)
     public func resizeImage(
         _ image: Data,
         to targetSize: CGSize,
