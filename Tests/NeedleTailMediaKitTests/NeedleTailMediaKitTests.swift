@@ -1,6 +1,7 @@
 // These tests exercise Apple-framework-backed implementations (CoreGraphics/ImageIO/CoreVideo/etc).
 // The Android toolchain used by `skip android test` does not provide these modules.
-#if canImport(NeedleTailMediaKit) && !os(Android)
+// Linux toolchains also typically don't ship these Apple frameworks.
+#if canImport(NeedleTailMediaKit) && !os(Android) && (os(macOS) || os(iOS) || os(tvOS) || os(watchOS))
 @testable import NeedleTailMediaKit
 import Foundation
 import CoreGraphics
