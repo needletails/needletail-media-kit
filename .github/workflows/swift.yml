@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-          - os: [self-hosted, macos]
+          - os: macos-26
             required_macos_major: '26'
             required_xcode_major: '26'
 
