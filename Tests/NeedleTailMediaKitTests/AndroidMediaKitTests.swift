@@ -108,7 +108,13 @@ final class AndroidMediaKitTests: XCTestCase {
 
     func testImageProcessorInvalidInput() async throws {
         let processor = ImageProcessor()
+        #if SKIP
+        let invalidData = Data(platformValue: kotlin.ByteArray(size: 4) { index in
+            index.toByte()
+        })
+        #else
         let invalidData = Data([0, 1, 2, 3])
+        #endif
         do {
             _ = try await processor.resizeImage(invalidData, to: CGSize(width: 10, height: 10))
             XCTFail("Should have thrown an error for invalid input")
@@ -199,7 +205,7 @@ final class AndroidMediaKitTests: XCTestCase {
         )
         
         if success {
-            return Data(bytes: outputStream.toByteArray())
+            return Data(platformValue: outputStream.toByteArray())
         }
         return Data()
         #elseif canImport(CoreGraphics) && canImport(ImageIO)

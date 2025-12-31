@@ -42,9 +42,8 @@ public actor AndroidImageProcessor {
     ) async throws -> Data {
         #if SKIP
         // Android implementation using Skip's interop
-        let bitmapFactory = android.graphics.BitmapFactory()
-        let byteArray = image.toKotlinByteArray()
-        guard let bitmap = bitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        let byteArray = image.platformValue
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
         
@@ -67,7 +66,7 @@ public actor AndroidImageProcessor {
         }
         
         let result = outputStream.toByteArray()
-        return Data(bytes: result)
+        return Data(platformValue: result)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -84,9 +83,8 @@ public actor AndroidImageProcessor {
         radius: Double = 10.0
     ) async throws -> Data {
         #if SKIP
-        let bitmapFactory = android.graphics.BitmapFactory()
-        let byteArray = image.toKotlinByteArray()
-        guard let bitmap = bitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        let byteArray = image.platformValue
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
         
@@ -107,7 +105,7 @@ public actor AndroidImageProcessor {
         }
         
         let result = outputStream.toByteArray()
-        return Data(bytes: result)
+        return Data(platformValue: result)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -124,9 +122,8 @@ public actor AndroidImageProcessor {
         intensity: Double = 0.8
     ) async throws -> Data {
         #if SKIP
-        let bitmapFactory = android.graphics.BitmapFactory()
-        let byteArray = image.toKotlinByteArray()
-        guard let bitmap = bitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        let byteArray = image.platformValue
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
         
@@ -144,7 +141,7 @@ public actor AndroidImageProcessor {
         }
         
         let result = outputStream.toByteArray()
-        return Data(bytes: result)
+        return Data(platformValue: result)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -163,9 +160,8 @@ public actor AndroidImageProcessor {
         contrast: Double = 1.0
     ) async throws -> Data {
         #if SKIP
-        let bitmapFactory = android.graphics.BitmapFactory()
-        let byteArray = image.toKotlinByteArray()
-        guard let bitmap = bitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        let byteArray = image.platformValue
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
         
@@ -187,7 +183,7 @@ public actor AndroidImageProcessor {
         }
         
         let result = outputStream.toByteArray()
-        return Data(bytes: result)
+        return Data(platformValue: result)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -199,9 +195,8 @@ public actor AndroidImageProcessor {
     /// - Throws: ImageErrors if processing fails
     public func convertToGrayscale(_ image: Data) async throws -> Data {
         #if SKIP
-        let bitmapFactory = android.graphics.BitmapFactory()
-        let byteArray = image.toKotlinByteArray()
-        guard let bitmap = bitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        let byteArray = image.platformValue
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
         
@@ -219,7 +214,7 @@ public actor AndroidImageProcessor {
         }
         
         let result = outputStream.toByteArray()
-        return Data(bytes: result)
+        return Data(platformValue: result)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -303,7 +298,7 @@ public actor AndroidImageProcessor {
         let pixels = kotlin.IntArray(size: width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
-        for i in 0..<pixels.length {
+        for i in 0..<pixels.size {
             let pixel = pixels[i]
             let a = (pixel >> 24) & 0xFF
             var r = (pixel >> 16) & 0xFF
@@ -336,7 +331,7 @@ public actor AndroidImageProcessor {
         let brightnessAdjustment = Int(brightness * 255.0)
         let contrastFactor = (259.0 * (contrast * 255.0 + 255.0)) / (255.0 * (259.0 - contrast * 255.0))
         
-        for i in 0..<pixels.length {
+        for i in 0..<pixels.size {
             let pixel = pixels[i]
             let a = (pixel >> 24) & 0xFF
             var r = (pixel >> 16) & 0xFF
@@ -371,7 +366,7 @@ public actor AndroidImageProcessor {
         let pixels = kotlin.IntArray(size: width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
-        for i in 0..<pixels.length {
+        for i in 0..<pixels.size {
             let pixel = pixels[i]
             let a = (pixel >> 24) & 0xFF
             let r = (pixel >> 16) & 0xFF
@@ -392,18 +387,9 @@ public actor AndroidImageProcessor {
 }
 
 #if SKIP
-// MARK: - Data Extension for Kotlin Interop
-extension Data {
-    func toKotlinByteArray() -> kotlin.ByteArray {
-        return kotlin.ByteArray(size: self.count) { index in
-            self[index]
-        }
-    }
-}
-
 extension kotlin.ByteArray {
     func toSwiftData() -> Data {
-        return Data(bytes: self)
+        return Data(platformValue: self)
     }
 }
 #endif
