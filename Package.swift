@@ -45,7 +45,7 @@ let package = Package(
     ]
 )
 
-#if os(iOS) || os(macOS) && !os(Android)
+#if os(iOS) || os(macOS) && !os(Android) && !os(Linux)
 package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "137.7151.11"),)
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "Specs"))
 #endif
