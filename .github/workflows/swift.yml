@@ -13,8 +13,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-          - os: macos-15
-            xcode: '16.2'
+          - os: [self-hosted, macos, macos-26]
+            required_xcode_major: '26'
 
     runs-on: ${{ matrix.os }}
 
@@ -22,18 +22,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode (macOS)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: ${{ matrix.xcode }}
-
       - name: Xcode version
-        if: ${{ startsWith(matrix.os, 'macos-') }}
+        if: ${{ runner.os == 'macOS' }}
         run: xcodebuild -version
 
+      - name: Require Xcode 26 (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Expecting Xcode major: ${{ matrix.required_xcode_major }}"
+          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
+          echo "$XCODE_VERSION_LINE"
+          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          if [[ "$XCODE_MAJOR" != "${{ matrix.required_xcode_major }}" ]]; then
+            echo "Xcode ${{ matrix.required_xcode_major }} is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            exit 1
+          fi
+
       - name: Swift version (macOS)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
+        if: ${{ runner.os == 'macOS' }}
         run: |
           swift --version
           xcrun swift --version
@@ -66,7 +74,7 @@ jobs:
           echo "$SWIFT_PATH" >> $GITHUB_PATH
 
       - name: Install Skip.tools (macOS)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
+        if: ${{ runner.os == 'macOS' }}
         run: |
           brew install skiptools/skip/skip
           skip version
@@ -80,7 +88,7 @@ jobs:
             ${{ runner.os }}-swift-
 
       - name: Xcode version (pre-build)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
+        if: ${{ runner.os == 'macOS' }}
         run: xcodebuild -version
 
       - name: Build

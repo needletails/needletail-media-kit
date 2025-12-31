@@ -12,6 +12,16 @@ import MetalKit
 import CoreMedia.CMTime
 import Vision
 
+extension MTLCommandBuffer {
+    func completed() async {
+        await withCheckedContinuation { continuation in
+            addCompletedHandler { _ in
+                continuation.resume()
+            }
+        }
+    }
+}
+
 public actor MetalProcessor {
     
     enum MetalScalingErrors: Error, Sendable {
