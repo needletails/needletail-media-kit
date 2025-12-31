@@ -13,7 +13,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-          - os: [self-hosted, macos, macos-26]
+          - os: [self-hosted, macos]
+            required_macos_major: '26'
             required_xcode_major: '26'
 
     runs-on: ${{ matrix.os }}
@@ -25,6 +26,20 @@ jobs:
       - name: Xcode version
         if: ${{ runner.os == 'macOS' }}
         run: xcodebuild -version
+
+      - name: Require macOS 26 (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Expecting macOS major: ${{ matrix.required_macos_major }}"
+          MACOS_VERSION=$(sw_vers -productVersion)
+          echo "macOS $MACOS_VERSION"
+          MACOS_MAJOR=$(echo "$MACOS_VERSION" | cut -d. -f1)
+          if [[ "$MACOS_MAJOR" != "${{ matrix.required_macos_major }}" ]]; then
+            echo "macOS ${{ matrix.required_macos_major }} is required on this runner. Found: macOS $MACOS_VERSION" >&2
+            exit 1
+          fi
 
       - name: Require Xcode 26 (macOS)
         if: ${{ runner.os == 'macOS' }}
