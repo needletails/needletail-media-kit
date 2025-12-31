@@ -11,13 +11,55 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+          - os: macos-26
+            required_macos_major: '26'
+            required_xcode_major: '26'
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Xcode version
+        if: ${{ runner.os == 'macOS' }}
+        run: xcodebuild -version
+
+      - name: Require macOS 26 (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Expecting macOS major: ${{ matrix.required_macos_major }}"
+          MACOS_VERSION=$(sw_vers -productVersion)
+          echo "macOS $MACOS_VERSION"
+          MACOS_MAJOR=$(echo "$MACOS_VERSION" | cut -d. -f1)
+          if [[ "$MACOS_MAJOR" != "${{ matrix.required_macos_major }}" ]]; then
+            echo "macOS ${{ matrix.required_macos_major }} is required on this runner. Found: macOS $MACOS_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Require Xcode 26 (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Expecting Xcode major: ${{ matrix.required_xcode_major }}"
+          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
+          echo "$XCODE_VERSION_LINE"
+          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          if [[ "$XCODE_MAJOR" != "${{ matrix.required_xcode_major }}" ]]; then
+            echo "Xcode ${{ matrix.required_xcode_major }} is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            exit 1
+          fi
+
+      - name: Swift version (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          swift --version
+          xcrun swift --version
 
       - name: Install system dependencies
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -46,14 +88,8 @@ jobs:
           echo "SWIFT_PATH=$SWIFT_PATH" >> $GITHUB_ENV
           echo "$SWIFT_PATH" >> $GITHUB_PATH
 
-      - name: Install Swift 6.2.1 (macOS)
-        if: ${{ matrix.os == 'macos-latest' }}
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: '6.2.1'
-
       - name: Install Skip.tools (macOS)
-        if: ${{ matrix.os == 'macos-latest' }}
+        if: ${{ runner.os == 'macOS' }}
         run: |
           brew install skiptools/skip/skip
           skip version
@@ -65,6 +101,10 @@ jobs:
           key: ${{ runner.os }}-swift-${{ hashFiles('Package.swift') }}
           restore-keys: |
             ${{ runner.os }}-swift-
+
+      - name: Xcode version (pre-build)
+        if: ${{ runner.os == 'macOS' }}
+        run: xcodebuild -version
 
       - name: Build
         run: swift build --configuration release

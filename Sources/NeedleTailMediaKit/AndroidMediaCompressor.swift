@@ -165,8 +165,6 @@ public actor AndroidMediaCompressor {
         
         // Setup MediaMuxer for output
         let muxer = android.media.MediaMuxer(outputPath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        var muxerStarted = false
-        var videoTrackIndexMuxer = -1
         
         // For video compression with scaling, we use non-GPU Bitmap-based scaling:
         // 1. Use ImageReader to get Image objects from decoder (YUV format)
@@ -202,12 +200,6 @@ public actor AndroidMediaCompressor {
         }
         
         decoder.start()
-        
-        // For scaling: setup Canvas to render scaled Bitmaps to encoder surface
-        var canvas: android.graphics.Canvas? = nil
-        if needsScaling {
-            canvas = android.graphics.Canvas(inputSurface)
-        }
         
         // Processing state
         var inputEOS = false
@@ -262,10 +254,10 @@ public actor AndroidMediaCompressor {
                                 true // Use filtering for better quality
                             )
                             
-                            // Render scaled Bitmap to encoder surface using Canvas
-                            if let canvas = canvas {
-                                canvas.drawBitmap(scaledBitmap, 0.0, 0.0, nil)
-                            }
+                            // Render scaled Bitmap to encoder surface using Surface Canvas
+                            let surfaceCanvas = inputSurface.lockCanvas(nil)
+                            surfaceCanvas.drawBitmap(scaledBitmap, Float(0.0), Float(0.0), nil)
+                            inputSurface.unlockCanvasAndPost(surfaceCanvas)
                             
                             // Cleanup
                             scaledBitmap.recycle()
@@ -371,7 +363,7 @@ public actor AndroidMediaCompressor {
         
         // Create RGB bitmap
         let bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
-        let pixels = IntArray(width * height)
+        let pixels = kotlin.IntArray(size: width * height)
         
         // Save current buffer positions
         let yBufferPos = yBuffer.position()
