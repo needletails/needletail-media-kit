@@ -15,9 +15,6 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
-    env:
-      SKIPKEY: ${{ secrets.SKIPKEY }}
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -60,13 +57,6 @@ jobs:
         run: |
           brew install skiptools/skip/skip
           skip version
-
-      - name: Configure Skip license key (macOS)
-        if: ${{ matrix.os == 'macos-latest' && secrets.SKIPKEY != '' }}
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.skiptools"
-          echo "SKIPKEY: $SKIPKEY" > "$HOME/.skiptools/skipkey.env"
 
       - name: Cache Swift packages
         uses: actions/cache@v4
