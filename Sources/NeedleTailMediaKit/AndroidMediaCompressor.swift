@@ -369,6 +369,18 @@ public actor AndroidMediaCompressor {
         let yBufferPos = yBuffer.position()
         let uBufferPos = uBuffer.position()
         let vBufferPos = vBuffer.position()
+
+        // Bulk-copy plane data once (much faster than per-pixel position()/get()).
+        // We rely on rowStride/pixelStride to index correctly, including padding.
+        yBuffer.position(0)
+        uBuffer.position(0)
+        vBuffer.position(0)
+        let yBytes = kotlin.ByteArray(size: yBuffer.remaining())
+        let uBytes = kotlin.ByteArray(size: uBuffer.remaining())
+        let vBytes = kotlin.ByteArray(size: vBuffer.remaining())
+        yBuffer.get(yBytes)
+        uBuffer.get(uBytes)
+        vBuffer.get(vBytes)
         
         // Convert YUV_420_888 to RGB
         // YUV_420_888: Y plane is full resolution, U and V planes are half resolution
@@ -378,16 +390,12 @@ public actor AndroidMediaCompressor {
             
             for x in 0..<width {
                 let yOffset = yRowOffset + x * yPixelStride
-                let uvOffset = uvRowOffset + (x / 2) * uPixelStride
+                let uOffset = uvRowOffset + (x / 2) * uPixelStride
+                let vOffset = (y / 2) * vRowStride + (x / 2) * vPixelStride
                 
-                // Read Y, U, V values from buffers
-                yBuffer.position(yOffset)
-                uBuffer.position(uvOffset)
-                vBuffer.position(uvOffset)
-                
-                let yVal = Int(yBuffer.get()) & 0xFF
-                let uVal = Int(uBuffer.get()) & 0xFF
-                let vVal = Int(vBuffer.get()) & 0xFF
+                let yVal = Int(yBytes[yOffset]) & 0xFF
+                let uVal = Int(uBytes[uOffset]) & 0xFF
+                let vVal = Int(vBytes[vOffset]) & 0xFF
                 
                 // YUV to RGB conversion (ITU-R BT.601)
                 let c = yVal - 16

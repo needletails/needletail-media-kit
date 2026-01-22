@@ -5,9 +5,10 @@
 //  Created by Cole M on 8/25/24.
 //
 import Foundation
-#if os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
+#if (os(iOS) || os(macOS)) && canImport(AVFoundation) && canImport(CoreImage)
 import AVFoundation
 import CoreImage
+import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
 #endif
 
@@ -349,7 +350,9 @@ public actor MediaCompressor {
         using track: AVAssetTrack,
         targetSize: CGSize
     ) async throws -> AVMutableVideoComposition {
-        
+        // CIContext is thread-safe; create once per composition rather than letting AVFoundation
+        // pick an implicit context each frame.
+        let ciContext = CIContext(options: [.cacheIntermediates: false])
         return try await AVMutableVideoComposition.videoComposition(with: asset) { request in
             
             // Extract the original source image's extent
@@ -362,21 +365,13 @@ public actor MediaCompressor {
             let scaleY = targetSize.height / originalSize.height
             let scaleFactor = min(scaleX, scaleY)
             
-            // Set up the Lanczos scale transform filter.
-            guard let scaleFilter = CIFilter(name: "CILanczosScaleTransform") else {
-                // Finish with an empty image if the filter failed to instantiate.
-                request.finish(with: CIImage(), context: nil)
-                return
-            }
+            let scaleFilter = CIFilter.lanczosScaleTransform()
+            scaleFilter.inputImage = request.sourceImage
+            scaleFilter.scale = Float(scaleFactor)
+            scaleFilter.aspectRatio = 1.0 // Lock aspect ratio
             
-            scaleFilter.setValue(request.sourceImage, forKey: kCIInputImageKey)
-            scaleFilter.setValue(scaleFactor, forKey: kCIInputScaleKey)
-            scaleFilter.setValue(1.0, forKey: kCIInputAspectRatioKey) // Lock aspect ratio
-            
-            // Retrieve the filtered output image.
             guard let scaledImage = scaleFilter.outputImage else {
-                // Finish the request with an empty image in case of error.
-                request.finish(with: CIImage(), context: nil)
+                request.finish(with: CIImage(), context: ciContext)
                 return
             }
             
@@ -391,7 +386,7 @@ public actor MediaCompressor {
             let centeredImage = scaledImage.transformed(by: centeringTransform)
             
             // Provide the final composed image to finish the request.
-            request.finish(with: centeredImage, context: nil)
+            request.finish(with: centeredImage, context: ciContext)
         }
     }
     #endif

@@ -10,145 +10,147 @@
 using namespace metal;
 
 // Define the kernel function
-kernel void ycbcrToRGBKernel(texture2d<float, access::read> yuvTexture [[ texture(0) ]],
-                              texture2d<float, access::write> rgbTexture [[ texture(1) ]],
+kernel void ycbcrToRGBKernel(texture2d<half, access::read> yuvTexture [[ texture(0) ]],
+                              texture2d<half, access::write> rgbTexture [[ texture(1) ]],
                               uint2 gid [[ thread_position_in_grid ]]) {
-    // Read the Y, Cb, and Cr values from the YUV texture
-    float y = yuvTexture.read(gid).y; // Y <-> y
-    float cb = yuvTexture.read(gid).z; // Cb <-> z
-    float cr = yuvTexture.read(gid).x; // Cr <-> x
-
-    // YCbCr to RGB conversion matrix
-    const float4x4 ycbcrToRGBTransform = float4x4(
-        float4(+1.0000f, +1.0000f, +1.0000f, +0.0000f),
-        float4(+0.0000f, -0.3441f, +1.7720f, +0.0000f),
-        float4(+1.4020f, -0.7141f, +0.0000f, +0.0000f),
-        float4(-0.7010f, +0.5291f, -0.8860f, +1.0000f)
-    );
-
-    // Convert YCbCr to RGB
-    float4 rgba = ycbcrToRGBTransform * float4(y, cb, cr, 1.0);
-
-    // Clamp the RGB values to the range [0, 1]
-    rgba = clamp(rgba, 0.0, 1.0);
-
-    // Write the RGB values to the output texture
+    half4 yuv = yuvTexture.read(gid);
+    half y  = yuv.y; // Y
+    half cb = yuv.z; // Cb
+    half cr = yuv.x; // Cr
+    
+    // Light-weight matrix form (avoids float4x4 multiply and multiple reads).
+    // Note: coefficients preserved from the original kernel.
+    half r = y + half(1.4020) * cr + half(-0.7010);
+    half g = y + half(-0.3441) * cb + half(-0.7141) * cr + half(0.5291);
+    half b = y + half(1.7720) * cb + half(-0.8860);
+    
+    half4 rgba = half4(saturate(r), saturate(g), saturate(b), half(1.0));
     rgbTexture.write(rgba, gid);
 }
 
 
 //BT.601 YUV
 kernel void rgbToYuvBt601(
-                          texture2d<float, access::read> rgbTexture [[texture(0)]],
-                          texture2d<float, access::write> yTexture [[texture(1)]],
-                          texture2d<float, access::write> uvTexture [[texture(2)]],
+                          texture2d<half, access::read> rgbTexture [[texture(0)]],
+                          texture2d<half, access::write> yTexture [[texture(1)]],
+                          texture2d<half, access::write> uvTexture [[texture(2)]],
                           uint2 gid [[thread_position_in_grid]]
                           ) {
-                              // Get RGB pixel value
-                              float4 rgbPixel = rgbTexture.read(gid);
+                              const uint width = yTexture.get_width();
+                              const uint height = yTexture.get_height();
+                              if (gid.x >= width || gid.y >= height) { return; }
                               
-                              // Convert RGB to YUV (ITU-R BT.601-4 coefficients)
-                              float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
-                              float u = -0.169 * rgbPixel.r - 0.331 * rgbPixel.g + 0.500 * rgbPixel.b + 0.5;
-                              float v = 0.500 * rgbPixel.r - 0.419 * rgbPixel.g - 0.081 * rgbPixel.b + 0.5;
+                              // Per-pixel luma
+                              half4 rgb = rgbTexture.read(gid);
+                              half y = half(0.299) * rgb.r + half(0.587) * rgb.g + half(0.114) * rgb.b;
+                              yTexture.write(half4(y, half(0.0), half(0.0), half(1.0)), gid);
                               
-                              // Clamp U and V values to [0, 1] range
-                              u = clamp(u, 0.0, 1.0);
-                              v = clamp(v, 0.0, 1.0);
+                              // UV subsampling: only one thread writes each UV pixel.
+                              if ((gid.x & 1u) != 0u || (gid.y & 1u) != 0u) { return; }
                               
-                              // Write Y value to Y texture
-                              float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
-                              yTexture.write(yValue, gid);
+                              uint2 p0 = gid;
+                              uint2 p1 = uint2(min(gid.x + 1u, width  - 1u), gid.y);
+                              uint2 p2 = uint2(gid.x, min(gid.y + 1u, height - 1u));
+                              uint2 p3 = uint2(min(gid.x + 1u, width  - 1u), min(gid.y + 1u, height - 1u));
                               
-                              // Pack U and V values into a single float4
-                              float4 uvValue = float4(u, v, 0.0, 1.0);
+                              half3 c0 = rgbTexture.read(p0).rgb;
+                              half3 c1 = rgbTexture.read(p1).rgb;
+                              half3 c2 = rgbTexture.read(p2).rgb;
+                              half3 c3 = rgbTexture.read(p3).rgb;
+                              half3 avg = (c0 + c1 + c2 + c3) * half(0.25);
                               
-                              // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-                              uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
+                              half u = half(-0.169) * avg.r + half(-0.331) * avg.g + half(0.500) * avg.b + half(0.5);
+                              half v = half(0.500) * avg.r + half(-0.419) * avg.g + half(-0.081) * avg.b + half(0.5);
+                              
+                              u = saturate(u);
+                              v = saturate(v);
+                              
+                              uvTexture.write(half4(u, v, half(0.0), half(1.0)), uint2(gid.x / 2u, gid.y / 2u));
                           }
 
 
 kernel void rgbToYuv(
-                     texture2d<float, access::read> rgbTexture [[texture(0)]],
-                     texture2d<float, access::write> yTexture [[texture(1)]],
-                     texture2d<float, access::write> uvTexture [[texture(2)]],
+                     texture2d<half, access::read> rgbTexture [[texture(0)]],
+                     texture2d<half, access::write> yTexture [[texture(1)]],
+                     texture2d<half, access::write> uvTexture [[texture(2)]],
                      uint2 gid [[thread_position_in_grid]]
                      ) {
-                         // Get RGB pixel value
-                         float4 rgbPixel = rgbTexture.read(gid);
+                         const uint width = yTexture.get_width();
+                         const uint height = yTexture.get_height();
+                         if (gid.x >= width || gid.y >= height) { return; }
                          
-                         // Convert RGB to YUV
-                         float y = 0.299 * rgbPixel.r + 0.587 * rgbPixel.g + 0.114 * rgbPixel.b;
-                         float u = -0.14713 * rgbPixel.r - 0.28886 * rgbPixel.g + 0.436 * rgbPixel.b + 0.5; // Adjusted U
-                         float v = 0.615 * rgbPixel.r - 0.51499 * rgbPixel.g - 0.10001 * rgbPixel.b + 0.5; // Adjusted V
+                         // Per-pixel luma
+                         half4 rgb = rgbTexture.read(gid);
+                         half y = half(0.299) * rgb.r + half(0.587) * rgb.g + half(0.114) * rgb.b;
+                         yTexture.write(half4(y, half(0.0), half(0.0), half(1.0)), gid);
                          
-                         // Clamp U and V values to [16, 240] range
-                         u = clamp(u * 255.0, 16.0, 240.0) / 255.0;
-                         v = clamp(v * 255.0, 16.0, 240.0) / 255.0;
+                         // UV subsampling (single-writer per UV pixel) using 2x2 average.
+                         if ((gid.x & 1u) != 0u || (gid.y & 1u) != 0u) { return; }
                          
-                         // Write Y value to Y texture
-                         float4 yValue = float4(y, 0.0, 0.0, 1.0); // Assuming YUV format
-                         yTexture.write(yValue, gid);
+                         uint2 p0 = gid;
+                         uint2 p1 = uint2(min(gid.x + 1u, width  - 1u), gid.y);
+                         uint2 p2 = uint2(gid.x, min(gid.y + 1u, height - 1u));
+                         uint2 p3 = uint2(min(gid.x + 1u, width  - 1u), min(gid.y + 1u, height - 1u));
                          
-                         // Pack U and V values into a single float4
-                         float4 uvValue = float4(u, v, 0.0, 1.0);
+                         half3 c0 = rgbTexture.read(p0).rgb;
+                         half3 c1 = rgbTexture.read(p1).rgb;
+                         half3 c2 = rgbTexture.read(p2).rgb;
+                         half3 c3 = rgbTexture.read(p3).rgb;
+                         half3 avg = (c0 + c1 + c2 + c3) * half(0.25);
                          
-                         // Write UV value to UV texture (interleaved for kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-                         uvTexture.write(uvValue, uint2(gid.x / 2, gid.y / 2));
+                         half u = half(-0.14713) * avg.r + half(-0.28886) * avg.g + half(0.436) * avg.b + half(0.5);
+                         half v = half(0.615) * avg.r + half(-0.51499) * avg.g + half(-0.10001) * avg.b + half(0.5);
+                         
+                         // Clamp U and V to [16, 240] in 8-bit normalized space.
+                         u = clamp(u * half(255.0), half(16.0), half(240.0)) / half(255.0);
+                         v = clamp(v * half(255.0), half(16.0), half(240.0)) / half(255.0);
+                         
+                         uvTexture.write(half4(u, v, half(0.0), half(1.0)), uint2(gid.x / 2u, gid.y / 2u));
                      }
 
 
-kernel void ycbcrToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
-                       texture2d<float, access::read> uvTexture [[texture(1)]],
-                       texture2d<float, access::write> rgbTexture [[texture(2)]],
+kernel void ycbcrToRgb(texture2d<half, access::read> yTexture [[texture(0)]],
+                       texture2d<half, access::read> uvTexture [[texture(1)]],
+                       texture2d<half, access::write> rgbTexture [[texture(2)]],
                        uint2 gid [[thread_position_in_grid]]) {
     
     // Get the YUV values from the input textures
-    float y = yTexture.read(gid).r;
-    float u = uvTexture.read(gid / 2).r - 0.5;
-    float v = uvTexture.read(gid / 2).g - 0.5;
+    half y = yTexture.read(gid).r;
+    half2 uv = uvTexture.read(gid / 2).rg - half2(0.5h, 0.5h);
+    half u = uv.x;
+    half v = uv.y;
     
     // BT.601 YUV to RGB conversion
-    float r = y + 1.403 * v;
-    float g = y - 0.344 * u - 0.714 * v;
-    float b = y + 1.770 * u;
-    
-    // Clamp the RGB values to the range [0, 1]
-    r = clamp(r, 0.0, 1.0);
-    g = clamp(g, 0.0, 1.0);
-    b = clamp(b, 0.0, 1.0);
+    half r = y + half(1.403) * v;
+    half g = y - half(0.344) * u - half(0.714) * v;
+    half b = y + half(1.770) * u;
     
     // Write the RGB values to the output texture
-    rgbTexture.write(float4(r, g, b, 1.0), gid);
+    rgbTexture.write(half4(saturate(r), saturate(g), saturate(b), half(1.0)), gid);
 }
 
-kernel void i420ToRgb(texture2d<float, access::read> yTexture [[texture(0)]],
-                      texture2d<float, access::read> uTexture [[texture(1)]],
-                      texture2d<float, access::read> vTexture [[texture(2)]],
-                      texture2d<float, access::write> rgbTexture [[texture(3)]],
+kernel void i420ToRgb(texture2d<half, access::read> yTexture [[texture(0)]],
+                      texture2d<half, access::read> uTexture [[texture(1)]],
+                      texture2d<half, access::read> vTexture [[texture(2)]],
+                      texture2d<half, access::write> rgbTexture [[texture(3)]],
                       uint2 gid [[thread_position_in_grid]]) {
     
     // Get the YUV values from the input textures
-    float y = yTexture.read(gid).r;
+    half y = yTexture.read(gid).r;
     
     // Since U and V are subsampled by 2 horizontally and vertically
     uint2 uvGid = gid / 2;
-    float u = uTexture.read(uvGid).r - 0.5; // U is subsampled by 2
-    float v = vTexture.read(uvGid).r - 0.5; // V is subsampled by 2
+    half u = uTexture.read(uvGid).r - half(0.5); // U is subsampled by 2
+    half v = vTexture.read(uvGid).r - half(0.5); // V is subsampled by 2
     
     // BT.601 YUV to RGB conversion
-    float r = y + 1.403 * v;
-    float g = y - 0.344 * u - 0.714 * v;
-    float b = y + 1.770 * u;
-    
-    // Clamp the RGB values to the range [0, 1]
-    r = clamp(r, 0.0, 1.0);
-    g = clamp(g, 0.0, 1.0);
-    b = clamp(b, 0.0, 1.0);
+    half r = y + half(1.403) * v;
+    half g = y - half(0.344) * u - half(0.714) * v;
+    half b = y + half(1.770) * u;
     
     
     // Write the RGB values to the output texture
-    rgbTexture.write(float4(r, g, b, 1.0), gid);
+    rgbTexture.write(half4(saturate(r), saturate(g), saturate(b), half(1.0)), gid);
 }
 
 
@@ -177,14 +179,14 @@ vertex TextureMappingVertex mapTexture(unsigned int vertex_id [[ vertex_id ]]) {
 }
 
 fragment half4 displayTexture(TextureMappingVertex mappingVertex [[ stage_in ]],
-                              texture2d<float, access::sample> texture [[ texture(0) ]]) {
+                              texture2d<half, access::sample> texture [[ texture(0) ]]) {
     constexpr sampler s(address::clamp_to_edge, filter::linear);
     
     return half4(texture.sample(s, mappingVertex.textureCoordinate));
 }
 
-kernel void flipKernel(texture2d<float, access::read> sourceTexture [[texture(0)]],
-                       texture2d<float, access::write> destinationTexture [[texture(1)]],
+kernel void flipKernel(texture2d<half, access::read> sourceTexture [[texture(0)]],
+                       texture2d<half, access::write> destinationTexture [[texture(1)]],
                        constant bool *horizontal [[ buffer(0) ]],
                        constant bool *vertical [[ buffer(1) ]],
                        uint2 gid [[thread_position_in_grid]]) {
@@ -207,31 +209,27 @@ kernel void flipKernel(texture2d<float, access::read> sourceTexture [[texture(0)
         }
         
         // Read from source texture and write to destination texture
-        float4 color = sourceTexture.read(sourceCoords);
+        half4 color = sourceTexture.read(sourceCoords);
         destinationTexture.write(color, gid);
     }
 }
 
-kernel void combineYUVKernel(texture2d<float, access::read> yTexture [[texture(0)]],
-                             texture2d<float, access::read> uvTexture [[texture(1)]],
-                             texture2d<float, access::write> combinedTexture [[texture(2)]],
+kernel void combineYUVKernel(texture2d<half, access::read> yTexture [[texture(0)]],
+                             texture2d<half, access::read> uvTexture [[texture(1)]],
+                             texture2d<half, access::write> combinedTexture [[texture(2)]],
                              uint2 gid [[thread_position_in_grid]]) {
     // Get Y and UV values at the current thread position
-    float y = yTexture.read(gid).r;
-    float u = uvTexture.read(gid / 2).r - 0.5;
-    float v = uvTexture.read(gid / 2).g - 0.5;
+    half y = yTexture.read(gid).r;
+    half2 uv = uvTexture.read(gid / 2).rg - half2(0.5h, 0.5h);
+    half u = uv.x;
+    half v = uv.y;
     
     // Combine YUV data into a single pixel
-    float r = y + 1.403 * v;
-    float g = y - 0.344 * u - 0.714 * v;
-    float b = y + 1.770 * u;
-    
-    // Clamp the RGB values to the range [0, 1]
-    r = clamp(r, 0.0, 1.0);
-    g = clamp(g, 0.0, 1.0);
-    b = clamp(b, 0.0, 1.0);
+    half r = y + half(1.403) * v;
+    half g = y - half(0.344) * u - half(0.714) * v;
+    half b = y + half(1.770) * u;
     
     // Write the combined pixel to the output texture
-    combinedTexture.write(float4(r, g, b, 1.0), gid);
+    combinedTexture.write(half4(saturate(r), saturate(g), saturate(b), half(1.0)), gid);
 }
 #endif

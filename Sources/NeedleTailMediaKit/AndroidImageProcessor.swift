@@ -224,66 +224,128 @@ public actor AndroidImageProcessor {
     // MARK: - Private Helper Methods
     
     private func applyBoxBlur(bitmap: android.graphics.Bitmap, radius: Int) -> android.graphics.Bitmap {
-        // Simple box blur implementation
-        // For production, consider using RenderScript or a more efficient algorithm
+        // Box blur implementation.
+        // Optimized to O(width*height) via sliding-window sums while preserving the
+        // exact edge handling and integer averaging of the original implementation.
         let width = bitmap.getWidth()
         let height = bitmap.getHeight()
+        if radius <= 0 || width <= 0 || height <= 0 {
+            return bitmap
+        }
         let pixels = kotlin.IntArray(size: width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
-        // Apply horizontal blur
+        // Horizontal pass into temp
+        let temp = kotlin.IntArray(size: width * height)
         for y in 0..<height {
-            for x in 0..<width {
-                var r = 0, g = 0, b = 0, a = 0
-                var count = 0
-                
-                for dx in -radius...radius {
-                    let nx = x + dx
-                    if nx >= 0 && nx < width {
-                        let pixel = pixels[y * width + nx]
-                        r += (pixel >> 16) & 0xFF
-                        g += (pixel >> 8) & 0xFF
-                        b += pixel & 0xFF
-                        a += (pixel >> 24) & 0xFF
-                        count += 1
-                    }
+            let rowBase = y * width
+            var sumA = 0
+            var sumR = 0
+            var sumG = 0
+            var sumB = 0
+            var count = 0
+            
+            // Initialize window for x=0: [0 ... min(radius, width-1)]
+            let rightInit = min(radius, width - 1)
+            for nx in 0...rightInit {
+                let p = pixels[rowBase + nx]
+                sumA += (p >> 24) & 0xFF
+                sumR += (p >> 16) & 0xFF
+                sumG += (p >> 8) & 0xFF
+                sumB += p & 0xFF
+                count += 1
+            }
+            
+            // x=0
+            var a = sumA / count
+            var r = sumR / count
+            var g = sumG / count
+            var b = sumB / count
+            temp[rowBase + 0] = (a << 24) | (r << 16) | (g << 8) | b
+            
+            if width == 1 { continue }
+            
+            // Slide window across row
+            for x in 1..<width {
+                let outX = x - radius - 1
+                if outX >= 0 {
+                    let pOut = pixels[rowBase + outX]
+                    sumA -= (pOut >> 24) & 0xFF
+                    sumR -= (pOut >> 16) & 0xFF
+                    sumG -= (pOut >> 8) & 0xFF
+                    sumB -= pOut & 0xFF
+                    count -= 1
                 }
-                
-                if count > 0 {
-                    r /= count
-                    g /= count
-                    b /= count
-                    a /= count
-                    pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+                let inX = x + radius
+                if inX < width {
+                    let pIn = pixels[rowBase + inX]
+                    sumA += (pIn >> 24) & 0xFF
+                    sumR += (pIn >> 16) & 0xFF
+                    sumG += (pIn >> 8) & 0xFF
+                    sumB += pIn & 0xFF
+                    count += 1
                 }
+                a = sumA / count
+                r = sumR / count
+                g = sumG / count
+                b = sumB / count
+                temp[rowBase + x] = (a << 24) | (r << 16) | (g << 8) | b
             }
         }
         
-        // Apply vertical blur
-        for y in 0..<height {
-            for x in 0..<width {
-                var r = 0, g = 0, b = 0, a = 0
-                var count = 0
-                
-                for dy in -radius...radius {
-                    let ny = y + dy
-                    if ny >= 0 && ny < height {
-                        let pixel = pixels[ny * width + x]
-                        r += (pixel >> 16) & 0xFF
-                        g += (pixel >> 8) & 0xFF
-                        b += pixel & 0xFF
-                        a += (pixel >> 24) & 0xFF
-                        count += 1
-                    }
+        // Vertical pass back into pixels
+        for x in 0..<width {
+            var sumA = 0
+            var sumR = 0
+            var sumG = 0
+            var sumB = 0
+            var count = 0
+            
+            // Initialize window for y=0: [0 ... min(radius, height-1)]
+            let bottomInit = min(radius, height - 1)
+            for ny in 0...bottomInit {
+                let p = temp[ny * width + x]
+                sumA += (p >> 24) & 0xFF
+                sumR += (p >> 16) & 0xFF
+                sumG += (p >> 8) & 0xFF
+                sumB += p & 0xFF
+                count += 1
+            }
+            
+            // y=0
+            var a = sumA / count
+            var r = sumR / count
+            var g = sumG / count
+            var b = sumB / count
+            pixels[0 * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+            
+            if height == 1 { continue }
+            
+            // Slide window down the column
+            for y in 1..<height {
+                let outY = y - radius - 1
+                if outY >= 0 {
+                    let pOut = temp[outY * width + x]
+                    sumA -= (pOut >> 24) & 0xFF
+                    sumR -= (pOut >> 16) & 0xFF
+                    sumG -= (pOut >> 8) & 0xFF
+                    sumB -= pOut & 0xFF
+                    count -= 1
                 }
-                
-                if count > 0 {
-                    r /= count
-                    g /= count
-                    b /= count
-                    a /= count
-                    pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+                let inY = y + radius
+                if inY < height {
+                    let pIn = temp[inY * width + x]
+                    sumA += (pIn >> 24) & 0xFF
+                    sumR += (pIn >> 16) & 0xFF
+                    sumG += (pIn >> 8) & 0xFF
+                    sumB += pIn & 0xFF
+                    count += 1
                 }
+                a = sumA / count
+                r = sumR / count
+                g = sumG / count
+                b = sumB / count
+                pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
             }
         }
         
