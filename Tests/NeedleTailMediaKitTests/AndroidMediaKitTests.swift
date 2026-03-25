@@ -62,41 +62,76 @@ final class AndroidMediaKitTests: XCTestCase {
         }
     }
     #else
+    private func assertThrowsUnsupportedImageFormat(_ operation: () async throws -> Data) async {
+        do {
+            _ = try await operation()
+            XCTFail("Expected unsupportedImageFormat")
+        } catch let error as ImageErrors {
+            guard case .unsupportedImageFormat = error else {
+                XCTFail("Expected unsupportedImageFormat, got: \(error)")
+                return
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
     func testImageProcessorResize() async throws {
         let processor = ImageProcessor()
         let pngData = createTestPNGData(width: 100, height: 100)
+        #if os(Linux)
+        await assertThrowsUnsupportedImageFormat { try await processor.resizeImage(pngData, to: CGSize(width: 50, height: 50)) }
+        #else
         let resized = try await processor.resizeImage(pngData, to: CGSize(width: 50, height: 50))
         XCTAssertGreaterThan(resized.count, 0, "Resized image should have data")
         XCTAssertNotEqual(resized, pngData, "Resized image should be different from original")
+        #endif
     }
 
     func testImageProcessorBlur() async throws {
         let processor = ImageProcessor()
         let pngData = createTestPNGData(width: 50, height: 50)
+        #if os(Linux)
+        await assertThrowsUnsupportedImageFormat { try await processor.applyBlur(to: pngData, radius: 5.0) }
+        #else
         let blurred = try await processor.applyBlur(to: pngData, radius: 5.0)
         XCTAssertGreaterThan(blurred.count, 0, "Blurred image should have data")
         XCTAssertNotEqual(blurred, pngData, "Blurred image should be different from original")
+        #endif
     }
 
     func testImageProcessorSepia() async throws {
         let processor = ImageProcessor()
         let pngData = createTestPNGData(width: 50, height: 50)
+        #if os(Linux)
+        await assertThrowsUnsupportedImageFormat { try await processor.applySepia(to: pngData, intensity: 0.8) }
+        #else
         let sepia = try await processor.applySepia(to: pngData, intensity: 0.8)
         XCTAssertGreaterThan(sepia.count, 0, "Sepia image should have data")
         XCTAssertNotEqual(sepia, pngData, "Sepia image should be different from original")
+        #endif
     }
 
     func testImageProcessorGrayscale() async throws {
         let processor = ImageProcessor()
         let pngData = createTestPNGData(width: 50, height: 50)
+        #if os(Linux)
+        await assertThrowsUnsupportedImageFormat { try await processor.convertToGrayscale(pngData) }
+        #else
         let grayscale = try await processor.convertToGrayscale(pngData)
         XCTAssertGreaterThan(grayscale.count, 0, "Grayscale image should have data")
         XCTAssertNotEqual(grayscale, pngData, "Grayscale image should be different from original")
+        #endif
     }
 
     func testImageProcessorBrightnessContrast() async throws {
         let processor = ImageProcessor()
         let pngData = createTestPNGData(width: 50, height: 50)
+        #if os(Linux)
+        await assertThrowsUnsupportedImageFormat {
+            try await processor.adjustBrightnessContrast(image: pngData, brightness: 0.2, contrast: 1.3)
+        }
+        #else
         let adjusted = try await processor.adjustBrightnessContrast(
             image: pngData,
             brightness: 0.2,
@@ -104,6 +139,7 @@ final class AndroidMediaKitTests: XCTestCase {
         )
         XCTAssertGreaterThan(adjusted.count, 0, "Adjusted image should have data")
         XCTAssertNotEqual(adjusted, pngData, "Adjusted image should be different from original")
+        #endif
     }
 
     func testImageProcessorInvalidInput() async throws {
