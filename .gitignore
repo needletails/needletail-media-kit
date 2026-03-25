@@ -59,6 +59,20 @@ Package.resolved
 # ------------------------------------------------------------------------------
 # Optional / common
 # ------------------------------------------------------------------------------
+# Credentials
+.env
+.env.*
+.netrc
+
+# IDEs
+.cursor/
+
+# Generated resource bundle accessor build artifacts
+resource_bundle_accessor-*.d
+resource_bundle_accessor-*.dia
+resource_bundle_accessor-*.swiftdeps
+resource_bundle_accessor-*.swiftmodule
+
 # Coverage
 *.profraw
 *.profdata
@@ -70,3 +84,5 @@ Package.resolved
 *.swp
 *.swo
 *~
+*.orig
+*.rej

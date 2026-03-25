@@ -220,7 +220,63 @@ public actor AndroidImageProcessor {
         #endif
     }
     
-    #if SKIP
+    /// Produces an orientation-correct thumbnail JPEG from image data (Android/Skip).
+    /// Reads EXIF orientation, applies rotation via Matrix, scales longest side to `maxSide`, compresses to JPEG.
+    /// - Parameters:
+    ///   - imageData: Source image bytes (JPEG, PNG, WebP, etc.).
+    ///   - maxSide: Longest side of the thumbnail in pixels.
+    ///   - compressionQuality: JPEG quality in 0...1.
+    /// - Returns: Thumbnail JPEG data.
+    public static func makeOrientationCorrectThumbnailJPEG(imageData: Data, maxSide: Int, compressionQuality: CGFloat) throws -> Data {
+        #if SKIP
+        let byteArray = imageData.platformValue
+        let inputStream = java.io.ByteArrayInputStream(byteArray)
+        let exif = android.media.ExifInterface(inputStream)
+        let orientation = exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
+        
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+            throw ImageErrors.invalidImageData
+        }
+        
+        let degrees: Int
+        switch orientation {
+        case android.media.ExifInterface.ORIENTATION_ROTATE_90: degrees = 90
+        case android.media.ExifInterface.ORIENTATION_ROTATE_180: degrees = 180
+        case android.media.ExifInterface.ORIENTATION_ROTATE_270: degrees = 270
+        default: degrees = 0
+        }
+        
+        let orientedBitmap: android.graphics.Bitmap
+        if degrees != 0 {
+            let matrix = android.graphics.Matrix()
+            matrix.postRotate(Float(degrees))
+            let w = bitmap.getWidth()
+            let h = bitmap.getHeight()
+            orientedBitmap = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h, matrix, true)
+        } else {
+            orientedBitmap = bitmap
+        }
+        
+        let w = orientedBitmap.getWidth()
+        let h = orientedBitmap.getHeight()
+        let longest = max(w, h)
+        let outW = longest <= maxSide ? w : (w * maxSide / longest)
+        let outH = longest <= maxSide ? h : (h * maxSide / longest)
+
+        let scaledBitmap = android.graphics.Bitmap.createScaledBitmap(orientedBitmap, outW, outH, true)
+        let outputStream = java.io.ByteArrayOutputStream()
+        let quality = Int(compressionQuality * 100.0)
+        let success = scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
+        guard success else {
+            throw ImageErrors.imageProcessingFailed("Failed to compress thumbnail to JPEG")
+        }
+        return Data(platformValue: outputStream.toByteArray())
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
+    }
+    
+        #if SKIP
     // MARK: - Private Helper Methods
     
     private func applyBoxBlur(bitmap: android.graphics.Bitmap, radius: Int) -> android.graphics.Bitmap {
@@ -448,7 +504,7 @@ public actor AndroidImageProcessor {
     #endif
 }
 
-#if SKIP
+    #if SKIP
 extension kotlin.ByteArray {
     func toSwiftData() -> Data {
         return Data(platformValue: self)

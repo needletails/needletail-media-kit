@@ -328,20 +328,22 @@ public actor MediaCompressor {
     #endif
     
     func scaledResolution(for originalSize: CGSize, using preset: MediaCompressor.AVAssetExportPreset) -> CGSize {
-        let isPortrait = originalSize.height > originalSize.width
         let presetSize = preset.targetSize
-        let originalArea = originalSize.width * originalSize.height
-        let presetArea = presetSize.width * presetSize.height
+        let originalWidth = max(originalSize.width, 1)
+        let originalHeight = max(originalSize.height, 1)
+        let widthScale = presetSize.width / originalWidth
+        let heightScale = presetSize.height / originalHeight
+        let scale = min(CGFloat(1), min(widthScale, heightScale))
         
-        // If the original area is smaller than the preset area, no scaling is needed.
-        if originalArea < presetArea {
-            return originalSize
-        } else if isPortrait && originalArea > presetArea {
-            // For portrait videos, swap the preset dimensions to preserve orientation.
-            return CGSize(width: presetSize.height, height: presetSize.width)
-        } else {
-            return presetSize
+        // Keep encoder-friendly even dimensions while preserving aspect.
+        func evenDimension(_ value: CGFloat) -> CGFloat {
+            let rounded = max(2, Int(value.rounded()))
+            return CGFloat((rounded / 2) * 2)
         }
+        
+        let scaledWidth = evenDimension(originalWidth * scale)
+        let scaledHeight = evenDimension(originalHeight * scale)
+        return CGSize(width: scaledWidth, height: scaledHeight)
     }
     
     #if os(iOS) || os(macOS) && canImport(AVFoundation) && canImport(CoreImage)
@@ -354,10 +356,13 @@ public actor MediaCompressor {
         // pick an implicit context each frame.
         let ciContext = CIContext(options: [.cacheIntermediates: false])
         return try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-            
-            // Extract the original source image's extent
+            // request.sourceImage already represents the frame AVFoundation is providing for composition.
+            // Normalize to origin and fit into the target canvas to avoid sideways/double-transform artifacts.
             let sourceExtent = request.sourceImage.extent
-            let originalSize = CGSize(width: sourceExtent.width, height: sourceExtent.height)
+            let originCorrection = CGAffineTransform(translationX: -sourceExtent.origin.x, y: -sourceExtent.origin.y)
+            let normalizedImage = request.sourceImage.transformed(by: originCorrection)
+            let normalizedExtent = normalizedImage.extent
+            let originalSize = CGSize(width: normalizedExtent.width, height: normalizedExtent.height)
             
             // Calculate scale factors along each axis and choose the lesser value
             // This maintains the original aspect ratio.
@@ -366,7 +371,7 @@ public actor MediaCompressor {
             let scaleFactor = min(scaleX, scaleY)
             
             let scaleFilter = CIFilter.lanczosScaleTransform()
-            scaleFilter.inputImage = request.sourceImage
+            scaleFilter.inputImage = normalizedImage
             scaleFilter.scale = Float(scaleFactor)
             scaleFilter.aspectRatio = 1.0 // Lock aspect ratio
             
@@ -385,8 +390,13 @@ public actor MediaCompressor {
             let centeringTransform = CGAffineTransform(translationX: xOffset, y: yOffset)
             let centeredImage = scaledImage.transformed(by: centeringTransform)
             
+            // Explicitly fill letterbox regions with black to avoid green/garbled padding on some decoders.
+            let canvasRect = CGRect(origin: .zero, size: targetSize)
+            let blackBackground = CIImage(color: CIColor.black).cropped(to: canvasRect)
+            let outputImage = centeredImage.composited(over: blackBackground).cropped(to: canvasRect)
+            
             // Provide the final composed image to finish the request.
-            request.finish(with: centeredImage, context: ciContext)
+            request.finish(with: outputImage, context: ciContext)
         }
     }
     #endif
