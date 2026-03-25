@@ -1,9 +1,88 @@
+# ------------------------------------------------------------------------------
+# NeedleTailMediaKit — SwiftPM + Xcode + Skip (Android) + macOS
+# ------------------------------------------------------------------------------
+
+# macOS
 .DS_Store
-/.build
-/Packages
-/*.xcodeproj
+.AppleDouble
+.LSOverride
+
+# Xcode / SwiftPM build products
+/.build/
+/DerivedData/
+/*.xcodeproj/
 xcuserdata/
-DerivedData/
-.swiftpm/config/registries.json
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+
+# SwiftPM local state
+/.swiftpm/
+
+# SwiftPM dependencies (SwiftPM sometimes checks these out here)
+/Packages/
+
+# Package.resolved should not be committed for this repo
+Package.resolved
+
+# Xcode workspace user state
+*.xcworkspace
+
+# Logs
+*.log
+
+# ------------------------------------------------------------------------------
+# Skip / skipstone (generated Android project outputs)
+# ------------------------------------------------------------------------------
+# Skip plugin outputs live under .build/ (already ignored), but keep these in case
+# output paths change or the generated Android project is copied elsewhere.
+**/destination/skipstone/
+**/*.skipcode.json
+**/.NeedleTailMediaKit.sourcehash
+**/.NeedleTailMediaKitTests.sourcehash
+
+# ------------------------------------------------------------------------------
+# Android / Gradle
+# ------------------------------------------------------------------------------
+# Build outputs
+**/build/
+**/.gradle/
+
+# Local SDK/NDK/user config
+**/local.properties
+**/keystore.properties
+
+# Android Studio / IntelliJ
+**/.idea/
+**/*.iml
+
+# Kotlin/Java caches
+**/out/
+
+# ------------------------------------------------------------------------------
+# Optional / common
+# ------------------------------------------------------------------------------
+# Credentials
+.env
+.env.*
 .netrc
+
+# IDEs
+.cursor/
+
+# Generated resource bundle accessor build artifacts
+resource_bundle_accessor-*.d
+resource_bundle_accessor-*.dia
+resource_bundle_accessor-*.swiftdeps
+resource_bundle_accessor-*.swiftmodule
+
+# Coverage
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.lcov
+
+# Editor/OS noise
+*.swp
+*.swo
+*~
+*.orig
+*.rej

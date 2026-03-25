@@ -43,6 +43,7 @@ public actor ImageProcessor {
     
     #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
     private let ciContext: CIContext
+    private let outputColorSpace = CGColorSpaceCreateDeviceRGB()
     #endif
     
     #if SKIP || os(Android)
@@ -51,12 +52,31 @@ public actor ImageProcessor {
     
     public init() {
         #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
-        self.ciContext = CIContext()
+        // Favor GPU rendering and reduce intermediate caching for lower memory churn.
+        self.ciContext = CIContext(options: [
+            .useSoftwareRenderer: false,
+            .cacheIntermediates: false
+        ])
         #endif
         #if SKIP || os(Android)
         self.androidProcessor = AndroidImageProcessor()
         #endif
     }
+
+    #if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+    private func pngData(from image: CIImage) throws -> Data {
+        // Avoid CI->CGImage->ImageIO hops; this is typically faster and reduces peak memory.
+        if let data = ciContext.pngRepresentation(
+            of: image,
+            format: .RGBA8,
+            colorSpace: outputColorSpace,
+            options: [:]
+        ) {
+            return data
+        }
+        throw ImageErrors.imageProcessingFailed("Failed to encode CIImage to PNG data")
+    }
+    #endif
 
     #if SKIP || os(Android)
     private nonisolated func mapAndroidError(_ error: AndroidImageProcessor.ImageErrors) -> ImageErrors {
@@ -98,16 +118,8 @@ public actor ImageProcessor {
         
         let transform = CGAffineTransform(scaleX: scale, y: scale)
         let scaledImage = ciImage.transformed(by: transform)
-        
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent) else {
-            throw ImageErrors.imageProcessingFailed("Failed to create CGImage from scaled image")
-        }
-        
-        guard let imageData = cgImage.pngData() else {
-            throw ImageErrors.imageProcessingFailed("Failed to convert CGImage to PNG data")
-        }
-        
-        return imageData
+
+        return try pngData(from: scaledImage)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -162,16 +174,9 @@ public actor ImageProcessor {
         guard let outputImage = blurFilter.outputImage else {
             throw ImageErrors.imageProcessingFailed("Failed to apply blur filter")
         }
-        
-        guard let cgImage = ciContext.createCGImage(outputImage, from: outputImage.extent) else {
-            throw ImageErrors.imageProcessingFailed("Failed to create CGImage from blurred image")
-        }
-        
-        guard let imageData = cgImage.pngData() else {
-            throw ImageErrors.imageProcessingFailed("Failed to convert CGImage to PNG data")
-        }
-        
-        return imageData
+
+        // Gaussian blur can expand extent; crop back to input size to keep output dimensions stable.
+        return try pngData(from: outputImage.cropped(to: ciImage.extent))
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -207,16 +212,8 @@ public actor ImageProcessor {
         guard let outputImage = sepiaFilter.outputImage else {
             throw ImageErrors.imageProcessingFailed("Failed to apply sepia filter")
         }
-        
-        guard let cgImage = ciContext.createCGImage(outputImage, from: outputImage.extent) else {
-            throw ImageErrors.imageProcessingFailed("Failed to create CGImage from sepia image")
-        }
-        
-        guard let imageData = cgImage.pngData() else {
-            throw ImageErrors.imageProcessingFailed("Failed to convert CGImage to PNG data")
-        }
-        
-        return imageData
+
+        return try pngData(from: outputImage)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -255,16 +252,8 @@ public actor ImageProcessor {
         guard let outputImage = colorControls.outputImage else {
             throw ImageErrors.imageProcessingFailed("Failed to apply brightness/contrast adjustment")
         }
-        
-        guard let cgImage = ciContext.createCGImage(outputImage, from: outputImage.extent) else {
-            throw ImageErrors.imageProcessingFailed("Failed to create CGImage from adjusted image")
-        }
-        
-        guard let imageData = cgImage.pngData() else {
-            throw ImageErrors.imageProcessingFailed("Failed to convert CGImage to PNG data")
-        }
-        
-        return imageData
+
+        return try pngData(from: outputImage)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -295,40 +284,10 @@ public actor ImageProcessor {
         guard let outputImage = colorControls.outputImage else {
             throw ImageErrors.imageProcessingFailed("Failed to apply grayscale filter")
         }
-        
-        guard let cgImage = ciContext.createCGImage(outputImage, from: outputImage.extent) else {
-            throw ImageErrors.imageProcessingFailed("Failed to create CGImage from grayscale image")
-        }
-        
-        guard let imageData = cgImage.pngData() else {
-            throw ImageErrors.imageProcessingFailed("Failed to convert CGImage to PNG data")
-        }
-        
-        return imageData
+
+        return try pngData(from: outputImage)
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
     }
 }
-
-// MARK: - CGImage Extension for PNG Data
-#if canImport(Accelerate) && canImport(CoreImage) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
-private extension CGImage {
-    func pngData() -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data,
-            UTType.png.identifier as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, self, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-        return data as Data
-    }
-}
-#endif

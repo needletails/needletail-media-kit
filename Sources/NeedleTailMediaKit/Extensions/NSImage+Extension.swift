@@ -12,6 +12,7 @@ public enum ImageType {
 #if os(macOS) && canImport(Cocoa)
 import Cocoa
 import UniformTypeIdentifiers
+import ImageIO
 
 extension NSView {
     public func toImage() -> NSImage? {
@@ -265,31 +266,69 @@ extension NSImage {
             throw ImageErrors.imageCreationFailed("Unable to create mutable CFData.")
         }
         
-        // Create a destination for the PNG data
+        // Create a destination for the output (no metadata)
         guard let destination = CGImageDestinationCreateWithData(mutableData, type == .png ? UTType.png.identifier as CFString : UTType.jpeg.identifier as CFString, 1, nil) else {
             throw ImageErrors.imageCreationFailed("Unable to create CGImageDestination.")
         }
         
-        // Copy the image from the source to the destination without metadata
-        if let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-            CGImageDestinationAddImage(destination, image, nil)
-            if !CGImageDestinationFinalize(destination) {
-                throw ImageErrors.imageCreationFailed("Failed to finalize the image destination.")
+        // Create an orientation-normalized image so EXIF orientation is baked into pixels (matches UIImage.stripped behavior on iOS).
+        let maxPixelSize: Int = {
+            guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int else {
+                return 16384
             }
-        } else {
-            throw ImageErrors.imageCreationFailed("Unable to create image from CGImageSource.")
+            return max(w, h)
+        }()
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let orientedImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            throw ImageErrors.imageCreationFailed("Unable to create orientation-normalized image from source.")
+        }
+        CGImageDestinationAddImage(destination, orientedImage, nil)
+        if !CGImageDestinationFinalize(destination) {
+            throw ImageErrors.imageCreationFailed("Failed to finalize the image destination.")
         }
         
-        // Convert CFData to Swift Data
-        let pngData = mutableData as Data
-        
-        // Create a new NSImage from the stripped data
-        guard let nsImage = NSImage(data: pngData) else {
+        let outputData = mutableData as Data
+        guard let nsImage = NSImage(data: outputData) else {
             throw ImageErrors.imageCreationFailed("Unable to create NSImage from \(type == .png ? "PNG" : "JPG") data.")
         }
         
         return nsImage
     }
     
+    /// Produces orientation-correct thumbnail JPEG data using ImageIO (no Metal/cgImage orientation loss).
+    public func thumbnailJPEGData(maxSide: CGFloat, compressionQuality: CGFloat = 0.75) throws -> Data {
+        guard let tiffData = tiffRepresentation else {
+            throw ImageErrors.imageCreationFailed("No TIFF representation for thumbnail.")
+        }
+        guard let source = CGImageSourceCreateWithData(tiffData as CFData, nil) else {
+            throw ImageErrors.imageCreationFailed("Unable to create CGImageSource for thumbnail.")
+        }
+        let maxPixelSize = Int(maxSide)
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            throw ImageErrors.imageCreationFailed("Unable to create thumbnail with transform.")
+        }
+        guard let mutableData = CFDataCreateMutable(kCFAllocatorDefault, 0) else {
+            throw ImageErrors.imageCreationFailed("Unable to create mutable data.")
+        }
+        guard let destination = CGImageDestinationCreateWithData(mutableData, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw ImageErrors.imageCreationFailed("Unable to create JPEG destination.")
+        }
+        let destOptions: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: compressionQuality]
+        CGImageDestinationAddImage(destination, thumbnail, destOptions as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw ImageErrors.imageCreationFailed("Failed to finalize thumbnail JPEG.")
+        }
+        return mutableData as Data
+    }
 }
 #endif

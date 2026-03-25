@@ -11,17 +11,63 @@
 import MetalKit
 import CoreMedia.CMTime
 import Vision
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public actor MetalProcessor {
     
     enum MetalScalingErrors: Error, Sendable {
         case metalNotSupported, failedToCreateTextureCache, failedToCreateTextureCacheFromImage, failedToCreateTexture, failedToUnwrapTexture, failedToUnwrapTextureCache, failedToGetTexture, errorSettingUpEncoder, errorSettingUpCommandQueue, shaderFunctionNotFound, failedToCreateDataProvider, failedToCreateOutputPixelBuffer, failedToCreatePixelBufferPool, failedToLockPixelBuffer, failedToCreatePipeline, sampleBufferCreationError
+        case pixelBufferCreationError, cannotProcessBackgroundImage, imageCreationFailed
     }
     
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
     let library: MTLLibrary
     let textureLoader: MTKTextureLoader
+    let textureCache: CVMetalTextureCache
+    
+    // Reuse CVPixelBufferPools by (format, width, height) to avoid per-call pool creation.
+    private struct PixelBufferPoolKey: Hashable, Sendable {
+        let pixelFormat: OSType
+        let width: Int
+        let height: Int
+        let metalCompatible: Bool
+    }
+    private var pixelBufferPoolCache: [PixelBufferPoolKey: CVPixelBufferPool] = [:]
+    private func pixelBufferPool(
+        pixelFormat: OSType,
+        width: Int,
+        height: Int,
+        metalCompatible: Bool
+    ) throws -> CVPixelBufferPool {
+        let key = PixelBufferPoolKey(
+            pixelFormat: pixelFormat,
+            width: width,
+            height: height,
+            metalCompatible: metalCompatible
+        )
+        if let existing = pixelBufferPoolCache[key] { return existing }
+        
+        var attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        if metalCompatible {
+            attributes[kCVPixelBufferMetalCompatibilityKey as String] = true
+        }
+        
+        var pool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
+        guard status == kCVReturnSuccess, let created = pool else {
+            throw MetalScalingErrors.failedToCreatePixelBufferPool
+        }
+        pixelBufferPoolCache[key] = created
+        return created
+    }
     var flipKernelPipeline: MTLComputePipelineState?
     var ycbcrToRgbKernelPipeline: MTLComputePipelineState?
     var twoVUYToRgbKernelPipeline: MTLComputePipelineState?
@@ -62,27 +108,31 @@ public actor MetalProcessor {
             }
             self.commandQueue = commandQueue
             self.textureLoader = MTKTextureLoader(device: device)
+            
+            var cache: CVMetalTextureCache?
+            guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess,
+                  let unwrapped = cache else {
+                throw MetalScalingErrors.failedToCreateTextureCache
+            }
+            self.textureCache = unwrapped
             _ = configureYpCbCrToARGBInfo()
         } catch {
             fatalError("Metal Not Supported: \(error)")
         }
     }
     
+    #if os(iOS) && canImport(Vision)
+    /// Cached Vision request (actor-isolated). Avoids repeated allocation/config each frame.
+    @available(iOS 15.0, *)
+    private var personSegmentationRequest: VNGeneratePersonSegmentationRequest?
+    #endif
+    
     public func createTexture(from pixelBuffer: CVPixelBuffer, device: MTLDevice) throws -> MTLTexture {
         var texture: CVMetalTexture?
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        
-        var textureCache: CVMetalTextureCache?
-        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess else {
-            throw MetalScalingErrors.failedToCreateTextureCache
-        }
-        defer {
-            if let textureCache = textureCache {
-                CVMetalTextureCacheFlush(textureCache, 0)
-            }
-        }
-        guard let textureCache = textureCache else { throw MetalScalingErrors.failedToUnwrapTextureCache }
+        // Use the actor-scoped cache (much cheaper than re-creating per call).
+        let textureCache = self.textureCache
         guard CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -279,13 +329,7 @@ public actor MetalProcessor {
         cvPixelBuffer: CVPixelBuffer,
         device: MTLDevice
     ) throws -> MTLTexture {
-        
-        // Create a Metal texture cache if not already created
-        var textureCache: CVMetalTextureCache?
-        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
-              let cache = textureCache else {
-            throw MetalScalingErrors.failedToCreateTextureCache
-        }
+        let cache = self.textureCache
         
         // Lock the base address of the CVPixelBuffer
         guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly) else {
@@ -323,8 +367,7 @@ public actor MetalProcessor {
         }
         
         // Set up a command buffer and encoder
-        guard let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalScalingErrors.errorSettingUpEncoder
         }
@@ -338,17 +381,15 @@ public actor MetalProcessor {
         computeEncoder.setTexture(yuvTexture, index: 0) // Use the interleaved YUV texture
         computeEncoder.setTexture(rgbTexture, index: 1) // Output RGB texture
         
-        let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
-
-        let threadgroups = MTLSize(
-            width: (rgbTexture.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-            height: (rgbTexture.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-            depth: 1)
-
-        computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+        let w = twoVUYToRgbKernelPipeline.threadExecutionWidth
+        let h = max(1, twoVUYToRgbKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         defer {
             computeEncoder.endEncoding()
             commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
         
         // Return the RGB texture
@@ -359,13 +400,7 @@ public actor MetalProcessor {
         cvPixelBuffer: CVPixelBuffer,
         device: MTLDevice
     ) throws -> MTLTexture {
-        
-        // Create a Metal texture cache if not already created
-        var textureCache: CVMetalTextureCache?
-        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
-              let cache = textureCache else {
-            throw MetalScalingErrors.failedToCreateTextureCache
-        }
+        let cache = self.textureCache
         
         // Lock the base address of the CVPixelBuffer
         guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly) else {
@@ -409,8 +444,7 @@ public actor MetalProcessor {
             ycbcrToRgbKernelPipeline = try createComputePipeline(device: device, shaderName: "ycbcrToRgb")
         }
         // Set up a command buffer and encoder
-        guard let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalScalingErrors.errorSettingUpEncoder
         }
@@ -424,17 +458,16 @@ public actor MetalProcessor {
         computeEncoder.setTexture(uvTexture, index: 1)
         computeEncoder.setTexture(rgbTexture, index: 2)
         
-        // Calculate threadgroup and grid sizes
-        let threadgroupCount = MTLSize(width: 8, height: 8, depth: 1)
-        let threadsPerThreadgroup = MTLSize(
-            width: (rgbTexture.width + threadgroupCount.width - 1) / threadgroupCount.width,
-            height: (rgbTexture.height + threadgroupCount.height - 1) / threadgroupCount.height,
-            depth: 1)
+        let w = ycbcrToRgbKernelPipeline.threadExecutionWidth
+        let h = max(1, ycbcrToRgbKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
         defer {
             computeEncoder.endEncoding()
             commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
-        computeEncoder.dispatchThreadgroups(threadsPerThreadgroup, threadsPerThreadgroup: threadgroupCount)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         
         
         // Return the RGB texture
@@ -478,13 +511,7 @@ public actor MetalProcessor {
         pixelBuffer: CVPixelBuffer,
         device: MTLDevice
     ) throws -> MTLTexture {
-        
-        // Create a Metal texture cache if not already created
-        var textureCache: CVMetalTextureCache?
-        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
-              let cache = textureCache else {
-            throw MetalScalingErrors.failedToCreateTextureCache
-        }
+        let cache = self.textureCache
         
         // Lock the base address of the CVPixelBuffer
         guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) else {
@@ -542,8 +569,7 @@ public actor MetalProcessor {
         }
         
         // Set up a command buffer and encoder
-        guard let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalScalingErrors.errorSettingUpEncoder
         }
@@ -558,14 +584,11 @@ public actor MetalProcessor {
         computeEncoder.setTexture(yTexture, index: 1)
         computeEncoder.setTexture(uvTexture, index: 2)
         
-        // Calculate threadgroup and grid sizes
-        let threadgroupCount = MTLSize(width: 8, height: 8, depth: 1)
-        let threadsPerThreadgroup = MTLSize(
-            width: (rgbTexture.width + threadgroupCount.width - 1) / threadgroupCount.width,
-            height: (rgbTexture.height + threadgroupCount.height - 1) / threadgroupCount.height,
-            depth: 1)
-        
-        computeEncoder.dispatchThreadgroups(threadsPerThreadgroup, threadsPerThreadgroup: threadgroupCount)
+        let w = rgbToYuvKernelPipeline.threadExecutionWidth
+        let h = max(1, rgbToYuvKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         defer {
             computeEncoder.endEncoding()
             commandBuffer.commit()
@@ -725,26 +748,21 @@ public actor MetalProcessor {
         let translateX = (Double(destTextureDescriptor.width) - Double(sourceTexture.width) * scaleInfo.scaleX) / 2
         let translateY = (Double(destTextureDescriptor.height) - Double(sourceTexture.height) * scaleInfo.scaleY) / 2
         
-        let transform = MPSScaleTransform(
+        var transform = MPSScaleTransform(
             scaleX: scaleInfo.scaleX,
             scaleY: scaleInfo.scaleY,
             translateX: translateX,
             translateY: translateY
         )
-        
-        let transformPointer = UnsafeMutablePointer<MPSScaleTransform>.allocate(capacity: 1)
-        transformPointer.initialize(to: transform)
-        filter.scaleTransform = UnsafePointer(transformPointer)
-        
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { throw MetalScalingErrors.errorSettingUpCommandQueue }
-        defer {
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-            transformPointer.deallocate()
-        }
+        withUnsafePointer(to: &transform) { transformPtr in
+            filter.scaleTransform = transformPtr
         filter.encode(commandBuffer: commandBuffer,
                       sourceTexture: sourceTexture,
                       destinationTexture: destTexture)
+        }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
         return destTexture
     }
     
@@ -788,7 +806,7 @@ public actor MetalProcessor {
         }
         
         // Create Command Buffer and Encoder
-        guard let commandBuffer = device.makeCommandQueue()?.makeCommandBuffer(),
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalScalingErrors.errorSettingUpEncoder
         }
@@ -818,6 +836,7 @@ public actor MetalProcessor {
         defer {
             computeEncoder.endEncoding()
             commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
         
         // Return Destination Texture
@@ -868,8 +887,8 @@ public actor MetalProcessor {
     public func createImage(from texture: MTLTexture, colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]) async -> NSImage {
         guard let ciImage = CIImage(mtlTexture: texture, options: colorSpace) else { fatalError("Failed to create CIImage") }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
-        let ciContext = CIContext()
-        guard let cgImage = ciContext.createCGImage(orientedImage, from: orientedImage.extent) else {
+        // Reuse the actor-scoped CIContext (cheaper than creating per call).
+        guard let cgImage = self.ciContext.createCGImage(orientedImage, from: orientedImage.extent) else {
             fatalError("Failed to create CGImage")
         }
         
@@ -885,21 +904,12 @@ extension MetalProcessor {
         uv: MTLTexture,
         attachments: CMAttachmentBearerAttachments
     ) throws -> CVPixelBuffer? {
-        // Pixel buffer attributes
-        let pixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            kCVPixelBufferWidthKey as String: y.width,
-            kCVPixelBufferHeightKey as String: y.height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
-            kCVPixelBufferMetalCompatibilityKey as String: true // Ensure Metal compatibility
-        ]
-        
-        // Create a pixel buffer pool
-        var pixelBufferPool: CVPixelBufferPool?
-        let status = CVPixelBufferPoolCreate(nil, nil, pixelBufferAttributes as CFDictionary, &pixelBufferPool)
-        guard status == kCVReturnSuccess, let pool = pixelBufferPool else {
-            throw MetalScalingErrors.failedToCreatePixelBufferPool
-        }
+        let pool = try pixelBufferPool(
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            width: y.width,
+            height: y.height,
+            metalCompatible: true
+        )
         
         // Create output pixel buffer
         var outputPixelBuffer: CVPixelBuffer?
@@ -928,7 +938,6 @@ extension MetalProcessor {
             let uvRegion = MTLRegionMake2D(0, 0, uv.width, uv.height)
             uv.getBytes(uvDestination, bytesPerRow: uvBytesPerRow, from: uvRegion, mipmapLevel: 0)
         }
-        CVPixelFormatDescriptionCreateWithPixelFormatType(kCFAllocatorDefault, .zero)
         // Unlock base addresses
         CVPixelBufferUnlockBaseAddress(pixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
         CMSetAttachments(pixelBuffer, attachments: attachments.propagated as CFDictionary, attachmentMode: kCMAttachmentMode_ShouldPropagate)
@@ -944,46 +953,28 @@ extension MetalProcessor {
         scaleInfo: ScaledInfo,
         aspectRatio: CGFloat
     ) throws -> CVPixelBuffer? {
-        // Pixel buffer attributes
-        let pixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            kCVPixelBufferWidthKey as String: parentBounds.width,
-            kCVPixelBufferHeightKey as String: parentBounds.height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
+        let width = Int(parentBounds.width)
+        let height = Int(parentBounds.height)
+        let pool = try pixelBufferPool(
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            width: width,
+            height: height,
+            metalCompatible: false
+        )
         
-        // Create a pixel buffer pool
-        var pixelBufferPool: CVPixelBufferPool?
-        let status = CVPixelBufferPoolCreate(nil, nil, pixelBufferAttributes as CFDictionary, &pixelBufferPool)
-        guard status == kCVReturnSuccess, let pool = pixelBufferPool else {
-            throw MetalScalingErrors.failedToCreatePixelBufferPool
-        }
+        // Use actor-scoped cache (cheaper than creating per call).
+        let cache = self.textureCache
         
-        // Create a texture cache
-        var textureCache: CVMetalTextureCache?
-        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess, let cache = textureCache else {
-            throw MetalScalingErrors.failedToCreateTextureCache
-        }
-        defer {
-            if let textureCache = textureCache {
-                CVMetalTextureCacheFlush(textureCache, 0)
-            }
-        }
         // Lock the base address of the input CVPixelBuffer
        _ = CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(cvPixelBuffer, .readOnly) }
         
         // Create textures for Y and UV planes
         let yTexture = try createMTLTextureForPlane(cvPixelBuffer: cvPixelBuffer, planeIndex: 0, textureCache: cache, format: .r8Unorm, device: device)
         let uvTexture = try createMTLTextureForPlane(cvPixelBuffer: cvPixelBuffer, planeIndex: 1, textureCache: cache, format: .rg8Unorm, device: device)
         
-        // Resize textures
-        //        let resizedY = try resizeImage(sourceTexture: yTexture, parentBounds: parentBounds, scaleInfo: scaleInfo, aspectRatio: aspectRatio)
-        //        let resizedUV = try resizeImage(sourceTexture: uvTexture, parentBounds: CGSize(width: parentBounds.width / 2, height: parentBounds.height / 2), scaleInfo: scaleInfo, aspectRatio: aspectRatio)
-        
         // Create output pixel buffer
         var outputPixelBuffer: CVPixelBuffer?
-//        let width = yTexture.width
-//        let height = yTexture.height
         let status2 = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outputPixelBuffer)
         guard status2 == kCVReturnSuccess, let pixelBuffer = outputPixelBuffer else {
             throw MetalScalingErrors.failedToCreateOutputPixelBuffer
@@ -1048,29 +1039,28 @@ extension MetalProcessor {
     
     
     public func createPixelBuffer(ciImage: CIImage, ciContext: CIContext) -> CVPixelBuffer? {
-        let attributes: [NSString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            kCVPixelBufferWidthKey: ciImage.extent.width,
-            kCVPixelBufferHeightKey: ciImage.extent.height,
-            kCVPixelBufferIOSurfacePropertiesKey: [:], // Empty dictionary for default properties
-            kCVPixelBufferMetalCompatibilityKey: true // Ensure Metal compatibility
-        ]
-        
-        
-        var pixelBufferPool: CVPixelBufferPool?
-        
-        _ = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pixelBufferPool)
-        
+        let width = Int(ciImage.extent.width.rounded(.down))
+        let height = Int(ciImage.extent.height.rounded(.down))
+        do {
+            let pool = try pixelBufferPool(
+                pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                width: width,
+                height: height,
+                metalCompatible: true
+            )
         var pixelBuffer: CVPixelBuffer?
-        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferPool!, &pixelBuffer)
-        
-        guard let unwrappedPixelBuffer = pixelBuffer, poolStatus == kCVReturnSuccess else {
+            let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
+            guard let unwrapped = pixelBuffer, poolStatus == kCVReturnSuccess else {
             print("Failed to create pixel buffer from pool. Status: \(poolStatus)")
             return nil
         }
         let orientedImage = ciImage.oriented(forExifOrientation: 4)
-        ciContext.render(orientedImage, to: unwrappedPixelBuffer)
-        return unwrappedPixelBuffer
+            ciContext.render(orientedImage, to: unwrapped)
+            return unwrapped
+        } catch {
+            print("Failed to create pixel buffer pool: \(error)")
+            return nil
+        }
     }
 }
 
@@ -1118,8 +1108,7 @@ extension MetalProcessor  {
             i420ToRgbKernelPipeline = try createComputePipeline(device: device, shaderName: "i420ToRgb")
         }
         // Set up a command buffer and encoder
-        guard let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             throw MetalScalingErrors.errorSettingUpEncoder
         }
@@ -1134,15 +1123,15 @@ extension MetalProcessor  {
         computeEncoder.setTexture(textures.vTexture, index: 2)
         computeEncoder.setTexture(rgbTexture, index: 3)
         
-        // Dispatch the compute shader
-        let threadgroupCount = MTLSize(width: 8, height: 8, depth: 1)
-        let threadgroupPerGrid = MTLSize(width: (rgbTexture.width + threadgroupCount.width - 1) / threadgroupCount.width,
-                                         height: (rgbTexture.height + threadgroupCount.height - 1) / threadgroupCount.height,
-                                         depth: 1)
-        computeEncoder.dispatchThreadgroups(threadgroupPerGrid, threadsPerThreadgroup: threadgroupCount)
+        let w = i420ToRgbKernelPipeline.threadExecutionWidth
+        let h = max(1, i420ToRgbKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         defer {
             computeEncoder.endEncoding()
             commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
         return rgbTexture
     }
@@ -1351,241 +1340,147 @@ extension MetalProcessor {
 #endif
 }
 
-//extension MetalProcessor {
-//
-//    @available(iOS 15, *)
-//    @SegmentationActor struct SegementationRequest {
-//        static let request = VNGeneratePersonSegmentationRequest()
-//    }
-//
-//    @available(iOS 15, *)
-//    /// This method is used when an image has been selected for Virtual Background. We are using Vision.framework to get the person segmentation mask
-//    /// - Parameters:
-//    ///   - pixelBuffer: Our `AVCaptureOutput` `CVPixelBuffer`
-//    ///   - backgroundBuffer: The `CVPixelBuffer` created from the Virtual Background Image
-//    ///   - ciContext: The render's `CIContext`
-//    /// - Returns: `ImageObject?`
-//    internal func processVideoFrame(_
-//                                    vbPacket: VirtualBackgroundPacket,
-//                                    originalAspectRatio: CGFloat,
-//                                    bounds: CGSize,
-//                                    ciContext: CIContext,
-//                                    scaleMode: ScaleMo,
-//                                    metalScaler: MetalScaler,
-//                                    backgroundType: VirtualBackgroundType
-//    ) async throws -> TextureInfo {
-//
-//        guard let foregroundPixels = vbPacket.foregroundPixels else { throw MetalScalingErrors.pixelBufferCreationError }
-//
-//        let aspectRatio = await metalScaler.getAspectRatio(
-//            width: CGFloat(foregroundPixels.width),
-//            height: CGFloat(foregroundPixels.height))
-//
-//        let scaleInfo = await metalScaler.createSize(
-//            for: scaleMode,
-//            originalSize: CGSize(
-//                width: foregroundPixels.width,
-//                height: foregroundPixels.height),
-//            desiredSize: CGSize(
-//                width: bounds.width,
-//                height: bounds.height
-//            ),
-//            aspectRatio: aspectRatio)
-//
-//        var foregroundInfo = try await metalScaler.createMetalImage(
-//            fromPixelBuffer: foregroundPixels,
-//            parentBounds: bounds,
-//            scaleInfo: scaleInfo,
-//            aspectRatio: aspectRatio
-//        )
-//
-//        guard let foregroundImage = CGImage(
-//            width: foregroundInfo.texture.width,
-//            height: foregroundInfo.texture.height,
-//            bitsPerComponent: 8,
-//            bitsPerPixel: 32,
-//            bytesPerRow: foregroundInfo.bytesPerRow,
-//            space: CGColorSpaceCreateDeviceRGB(),
-//            bitmapInfo: foregroundInfo.bitmapInfo,
-//            provider: foregroundInfo.provider,
-//            decode: nil,
-//            shouldInterpolate: true,
-//            intent: .defaultIntent) else { throw MetalScalingErrors.imageCreationFailed }
-//
-//        let foregroundBounds = CGSize(width: foregroundInfo.texture.width, height: foregroundInfo.texture.height)
-//        // Create request handler
-//        let request = await SegementationRequest.request
-//        request.qualityLevel = .balanced
-//        let handler = VNImageRequestHandler(
-//            cgImage: foregroundImage,
-//            orientation: .up,
-//            options: [.ciContext: ciContext])
-//
-//        try handler.perform([request])
-//
-//        guard let mask = request.results?.first else {
-//            throw MetalScalingErrors.cannotProcessBackgroundImage
-//        }
-//
-//        let ciImage = CIImage(cvPixelBuffer: mask.pixelBuffer)
-//        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { throw MetalScalingErrors.imageCreationFailed }
-//        let maskImage = UIImage(cgImage: cgImage)
-//
-//
-//        let maskAspectRatio = await metalScaler.getAspectRatio(width: CGFloat(foregroundImage.width), height: CGFloat(foregroundImage.height))
-//        let maskScaleInfo = await metalScaler.createSize(
-//            for: scaleMode,
-//            originalSize: CGSize(
-//                width: maskImage.size.width,
-//                height: maskImage.size.height),
-//            desiredSize: CGSize(
-//                width: foregroundImage.width,
-//                height: foregroundImage.height
-//            ),
-//            aspectRatio: maskAspectRatio)
-//
-//        var maskInfo = try await metalScaler.resizeImage(
-//            image: maskImage,
-//            parentBounds: foregroundBounds,
-//            scaleInfo: maskScaleInfo,
-//            aspectRatio: maskAspectRatio
-//        )
-//
-//        var backgroundCGImage: CGImage?
-//        if let backgroundImage = vbPacket.backgroundImage {
-//            let backgroundAspectRatio = await metalScaler.getAspectRatio(width: CGFloat(backgroundImage.size.width), height: CGFloat(backgroundImage.size.height))
-//            let backgroundScaleInfo = await metalScaler.createSize(
-//                for: UIDevice.current.orientation.isLandscape ? .horizontal : .vertical,
-//                originalSize: CGSize(
-//                    width: backgroundImage.size.width,
-//                    height: backgroundImage.size.height),
-//                desiredSize: CGSize(
-//                    width: foregroundImage.width,
-//                    height: foregroundImage.height
-//                ),
-//                aspectRatio: maskAspectRatio)
-//            var backgroundInfo = try await metalScaler.resizeImage(
-//                image: backgroundImage,
-//                parentBounds: foregroundBounds,
-//                scaleInfo: backgroundScaleInfo,
-//                aspectRatio: backgroundAspectRatio
-//            )
-//
-//            backgroundCGImage = CGImage(
-//                width: backgroundInfo.texture.width,
-//                height: backgroundInfo.texture.height,
-//                bitsPerComponent: 8,
-//                bitsPerPixel: 32,
-//                bytesPerRow: backgroundInfo.bytesPerRow,
-//                space: CGColorSpaceCreateDeviceRGB(),
-//                bitmapInfo: backgroundInfo.bitmapInfo,
-//                provider: backgroundInfo.provider,
-//                decode: nil,
-//                shouldInterpolate: true,
-//                intent: .defaultIntent)
-//        }
-//
-//        guard let foregroundImage = CGImage(
-//            width: foregroundInfo.texture.width,
-//            height: foregroundInfo.texture.height,
-//            bitsPerComponent: 8,
-//            bitsPerPixel: 32,
-//            bytesPerRow: foregroundInfo.bytesPerRow,
-//            space: CGColorSpaceCreateDeviceRGB(),
-//            bitmapInfo: foregroundInfo.bitmapInfo,
-//            provider: foregroundInfo.provider,
-//            decode: nil,
-//            shouldInterpolate: true,
-//            intent: .defaultIntent) else { throw MetalScalingErrors.imageCreationFailed }
-//
-//        guard let maskImage = CGImage(
-//            width: maskInfo.texture.width,
-//            height: maskInfo.texture.height,
-//            bitsPerComponent: 8,
-//            bitsPerPixel: 32,
-//            bytesPerRow: maskInfo.bytesPerRow,
-//            space: CGColorSpaceCreateDeviceRGB(),
-//            bitmapInfo: maskInfo.bitmapInfo,
-//            provider: maskInfo.provider,
-//            decode: nil,
-//            shouldInterpolate: true,
-//            intent: .defaultIntent) else { fatalError() }
-//
-//
-//
-//        return try await blendImages(
-//            backgroundType: backgroundType,
-//            foregroundImage: CIImage(cgImage: foregroundImage),
-//            maskImage: CIImage(cgImage: maskImage),
-//            backgroundImage: (backgroundCGImage != nil) ? CIImage(cgImage: backgroundCGImage!) : CIImage(cgImage: foregroundImage),
-//            ciContext: ciContext,
-//            scaleMode: scaleMode,
-//            metalScaler: metalScaler
-//        )
-//    }
-//
-//    /// This method is designed to take 3 buffer in order to blend them together and delivers a single object containg the Virtual Background Image
-//    /// - Parameters:
-//    ///   - foregroundBuffer: The `CVPixelBuffer` containing the original `AVCaptureOutput` image
-//    ///   - maskedBuffer: The `CVPixelBuffer` containing the Vision.framework masked  image
-//    ///   - backgroundBuffer: The `CVPixelBuffer` containing the background  image
-//    ///   - ciContext: The renderer's `CIContext`
-//    /// - Returns: `ImageObject?`
-//    @available(iOS 14, *)
-//    private func blendImages(
-//        backgroundType: VirtualBackgroundType,
-//        foregroundImage: CIImage,
-//        maskImage: CIImage,
-//        backgroundImage: CIImage,
-//        ciContext: CIContext,
-//        scaleMode: VideoScaleMode,
-//        metalScaler: MetalScaler
-//    ) async throws -> TextureInfo {
-//        let blendFilter = CIFilter.blendWithMask()
-//
-//        switch backgroundType {
-//        case .cameraBlur:
-//            let blurredImage = backgroundImage
-//                .clampedToExtent()
-//                .applyingGaussianBlur(sigma: 10.0)
-//                .cropped(to: backgroundImage.extent)
-//            blendFilter.inputImage = foregroundImage
-//            blendFilter.backgroundImage = blurredImage
-//            blendFilter.maskImage = maskImage
-//
-//        case .imageBlur:
-//            break
-//        case .image:
-//            blendFilter.inputImage = foregroundImage
-//            blendFilter.backgroundImage = backgroundImage
-//            blendFilter.maskImage = maskImage
-//        }
-//        guard let image = blendFilter.outputImage else { throw MetalScalingErrors.imageCreationFailed }
-//
-//        let aspectRatio = await getAspectRatio(
-//            width: CGFloat(image.extent.width),
-//            height: CGFloat(image.extent.height))
-//
-//        let scaleInfo = await createSize(
-//            for: scaleMode,
-//            originalSize: CGSize(
-//                width: image.extent.width,
-//                height: image.extent.height),
-//            desiredSize: CGSize(
-//                width: image.extent.size.width,
-//                height: image.extent.size.height
-//            ),
-//            aspectRatio: aspectRatio)
-//
-//        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { throw MetalScalingErrors.imageCreationFailed }
-//        let uiImage = UIImage(cgImage: cgImage)
-//        return try await resizeImage(
-//            image: uiImage,
-//            parentBounds: uiImage.size,
-//            scaleInfo: scaleInfo,
-//            aspectRatio: aspectRatio)
-//    }
-//}
+// MARK: - Virtual Background (iOS)
+#if os(iOS) && canImport(UIKit) && canImport(Vision) && canImport(CoreImage)
+extension MetalProcessor {
+    
+    /// High-level virtual background options.
+    @available(iOS 15.0, *)
+    public enum VirtualBackground {
+        case none
+        case blur(sigma: Double)
+        case image(UIImage)
+    }
+    
+    // Stored on the actor for concurrency-safety and reuse. Vision request objects are not Sendable.
+    @available(iOS 15.0, *)
+    private var segmentationRequest: VNGeneratePersonSegmentationRequest {
+        if let existing = personSegmentationRequest { return existing }
+        let req = VNGeneratePersonSegmentationRequest()
+        req.qualityLevel = .balanced
+        // Accurate mask values; caller can smooth downstream if desired.
+        req.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        personSegmentationRequest = req
+        return req
+    }
+    
+    /// World-class, self-contained virtual background pipeline:
+    /// - Runs Vision person segmentation on the foreground frame
+    /// - Composites the requested background via Core Image
+    /// - Renders to a Metal-compatible pixel buffer and returns an `MTLTexture`
+    @available(iOS 15.0, *)
+    public func applyVirtualBackground(
+        foregroundPixelBuffer: CVPixelBuffer,
+        background: VirtualBackground,
+        orientation: CGImagePropertyOrientation = .up,
+        outputSize: CGSize? = nil,
+        scaleMode: ScaleMode = .aspectFill
+    ) async throws -> MTLTexture {
+        return try await applyVirtualBackgroundWithPixelBuffer(
+            foregroundPixelBuffer: foregroundPixelBuffer,
+            background: background,
+            orientation: orientation,
+            outputSize: outputSize,
+            scaleMode: scaleMode
+        ).texture
+    }
+    
+    /// Same pipeline as `applyVirtualBackground(...)` but also returns the rendered CVPixelBuffer
+    /// (useful when you need both Metal + non-Metal consumers).
+    @available(iOS 15.0, *)
+    public func applyVirtualBackgroundWithPixelBuffer(
+        foregroundPixelBuffer: CVPixelBuffer,
+        background: VirtualBackground,
+        orientation: CGImagePropertyOrientation = .up,
+        outputSize: CGSize? = nil,
+        scaleMode: ScaleMode = .aspectFill
+    ) async throws -> (texture: MTLTexture, pixelBuffer: CVPixelBuffer) {
+        // 1) Build foreground CIImage
+        let foregroundCI = CIImage(cvPixelBuffer: foregroundPixelBuffer).oriented(orientation)
+        
+        // 2) Run Vision segmentation (synchronously on the MetalProcessor actor thread).
+        let handler = VNImageRequestHandler(
+            cvPixelBuffer: foregroundPixelBuffer,
+            orientation: orientation,
+            options: [:]
+        )
+        let request = segmentationRequest
+        try handler.perform([request])
+        guard let mask = request.results?.first else {
+            throw MetalScalingErrors.cannotProcessBackgroundImage
+        }
+        
+        // Vision mask is typically lower-res; scale to foreground extent.
+        var maskCI = CIImage(cvPixelBuffer: mask.pixelBuffer)
+        let sx = foregroundCI.extent.width / maskCI.extent.width
+        let sy = foregroundCI.extent.height / maskCI.extent.height
+        maskCI = maskCI.transformed(by: CGAffineTransform(scaleX: sx, y: sy)).cropped(to: foregroundCI.extent)
+        
+        // 3) Create background CIImage
+        let backgroundCI: CIImage = {
+            switch background {
+            case .none:
+                return foregroundCI
+            case .blur(let sigma):
+                return foregroundCI
+                    .clampedToExtent()
+                    .applyingGaussianBlur(sigma: sigma)
+                    .cropped(to: foregroundCI.extent)
+            case .image(let uiImage):
+                guard let bg = CIImage(image: uiImage) else { return foregroundCI }
+                // Aspect-fill to match the foreground extent.
+                let bgAR = bg.extent.width / max(bg.extent.height, 1)
+                let fgAR = foregroundCI.extent.width / max(foregroundCI.extent.height, 1)
+                let scale: CGFloat = (bgAR > fgAR)
+                    ? foregroundCI.extent.height / bg.extent.height
+                    : foregroundCI.extent.width / bg.extent.width
+                let scaled = bg.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                let x = scaled.extent.midX - foregroundCI.extent.midX
+                let y = scaled.extent.midY - foregroundCI.extent.midY
+                return scaled.transformed(by: CGAffineTransform(translationX: -x, y: -y)).cropped(to: foregroundCI.extent)
+            }
+        }()
+        
+        // 4) Composite
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = foregroundCI
+        blend.backgroundImage = backgroundCI
+        blend.maskImage = maskCI
+        guard var outputCI = blend.outputImage?.cropped(to: foregroundCI.extent) else {
+            throw MetalScalingErrors.imageCreationFailed
+        }
+        
+        // 5) Optional output sizing (keeps caller API simple)
+        if let outputSize, outputSize.width > 0, outputSize.height > 0 {
+            let aspect = getAspectRatio(width: foregroundCI.extent.width, height: foregroundCI.extent.height)
+            let scaled = createSize(for: scaleMode, originalSize: foregroundCI.extent.size, desiredSize: outputSize, aspectRatio: aspect)
+            let sx = scaled.size.width / foregroundCI.extent.width
+            let sy = scaled.size.height / foregroundCI.extent.height
+            outputCI = outputCI
+                .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+                .cropped(to: CGRect(origin: .zero, size: scaled.size))
+        }
+        
+        // 6) Render into a Metal-compatible BGRA pixel buffer and create a texture view
+        let width = Int(outputCI.extent.width.rounded(.down))
+        let height = Int(outputCI.extent.height.rounded(.down))
+        let pool = try pixelBufferPool(
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            width: width,
+            height: height,
+            metalCompatible: true
+        )
+        var pb: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb) == kCVReturnSuccess, let pixelBuffer = pb else {
+            throw MetalScalingErrors.failedToCreateOutputPixelBuffer
+        }
+        ciContext.render(outputCI, to: pixelBuffer)
+        
+        let texture = try createRGBMTLTexture(pixelBuffer: pixelBuffer, device: device)
+        return (texture: texture, pixelBuffer: pixelBuffer)
+    }
+}
+#endif
 
 
 public struct TextureInfo: Sendable {

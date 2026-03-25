@@ -220,70 +220,188 @@ public actor AndroidImageProcessor {
         #endif
     }
     
-    #if SKIP
+    /// Produces an orientation-correct thumbnail JPEG from image data (Android/Skip).
+    /// Reads EXIF orientation, applies rotation via Matrix, scales longest side to `maxSide`, compresses to JPEG.
+    /// - Parameters:
+    ///   - imageData: Source image bytes (JPEG, PNG, WebP, etc.).
+    ///   - maxSide: Longest side of the thumbnail in pixels.
+    ///   - compressionQuality: JPEG quality in 0...1.
+    /// - Returns: Thumbnail JPEG data.
+    public static func makeOrientationCorrectThumbnailJPEG(imageData: Data, maxSide: Int, compressionQuality: CGFloat) throws -> Data {
+        #if SKIP
+        let byteArray = imageData.platformValue
+        let inputStream = java.io.ByteArrayInputStream(byteArray)
+        let exif = android.media.ExifInterface(inputStream)
+        let orientation = exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
+        
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+            throw ImageErrors.invalidImageData
+        }
+        
+        let degrees: Int
+        switch orientation {
+        case android.media.ExifInterface.ORIENTATION_ROTATE_90: degrees = 90
+        case android.media.ExifInterface.ORIENTATION_ROTATE_180: degrees = 180
+        case android.media.ExifInterface.ORIENTATION_ROTATE_270: degrees = 270
+        default: degrees = 0
+        }
+        
+        let orientedBitmap: android.graphics.Bitmap
+        if degrees != 0 {
+            let matrix = android.graphics.Matrix()
+            matrix.postRotate(Float(degrees))
+            let w = bitmap.getWidth()
+            let h = bitmap.getHeight()
+            orientedBitmap = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h, matrix, true)
+        } else {
+            orientedBitmap = bitmap
+        }
+        
+        let w = orientedBitmap.getWidth()
+        let h = orientedBitmap.getHeight()
+        let longest = max(w, h)
+        let outW = longest <= maxSide ? w : (w * maxSide / longest)
+        let outH = longest <= maxSide ? h : (h * maxSide / longest)
+
+        let scaledBitmap = android.graphics.Bitmap.createScaledBitmap(orientedBitmap, outW, outH, true)
+        let outputStream = java.io.ByteArrayOutputStream()
+        let quality = Int(compressionQuality * 100.0)
+        let success = scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
+        guard success else {
+            throw ImageErrors.imageProcessingFailed("Failed to compress thumbnail to JPEG")
+        }
+        return Data(platformValue: outputStream.toByteArray())
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
+    }
+    
+        #if SKIP
     // MARK: - Private Helper Methods
     
     private func applyBoxBlur(bitmap: android.graphics.Bitmap, radius: Int) -> android.graphics.Bitmap {
-        // Simple box blur implementation
-        // For production, consider using RenderScript or a more efficient algorithm
+        // Box blur implementation.
+        // Optimized to O(width*height) via sliding-window sums while preserving the
+        // exact edge handling and integer averaging of the original implementation.
         let width = bitmap.getWidth()
         let height = bitmap.getHeight()
+        if radius <= 0 || width <= 0 || height <= 0 {
+            return bitmap
+        }
         let pixels = kotlin.IntArray(size: width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
-        // Apply horizontal blur
+        // Horizontal pass into temp
+        let temp = kotlin.IntArray(size: width * height)
         for y in 0..<height {
-            for x in 0..<width {
-                var r = 0, g = 0, b = 0, a = 0
-                var count = 0
-                
-                for dx in -radius...radius {
-                    let nx = x + dx
-                    if nx >= 0 && nx < width {
-                        let pixel = pixels[y * width + nx]
-                        r += (pixel >> 16) & 0xFF
-                        g += (pixel >> 8) & 0xFF
-                        b += pixel & 0xFF
-                        a += (pixel >> 24) & 0xFF
-                        count += 1
-                    }
+            let rowBase = y * width
+            var sumA = 0
+            var sumR = 0
+            var sumG = 0
+            var sumB = 0
+            var count = 0
+            
+            // Initialize window for x=0: [0 ... min(radius, width-1)]
+            let rightInit = min(radius, width - 1)
+            for nx in 0...rightInit {
+                let p = pixels[rowBase + nx]
+                sumA += (p >> 24) & 0xFF
+                sumR += (p >> 16) & 0xFF
+                sumG += (p >> 8) & 0xFF
+                sumB += p & 0xFF
+                count += 1
+            }
+            
+            // x=0
+            var a = sumA / count
+            var r = sumR / count
+            var g = sumG / count
+            var b = sumB / count
+            temp[rowBase + 0] = (a << 24) | (r << 16) | (g << 8) | b
+            
+            if width == 1 { continue }
+            
+            // Slide window across row
+            for x in 1..<width {
+                let outX = x - radius - 1
+                if outX >= 0 {
+                    let pOut = pixels[rowBase + outX]
+                    sumA -= (pOut >> 24) & 0xFF
+                    sumR -= (pOut >> 16) & 0xFF
+                    sumG -= (pOut >> 8) & 0xFF
+                    sumB -= pOut & 0xFF
+                    count -= 1
                 }
-                
-                if count > 0 {
-                    r /= count
-                    g /= count
-                    b /= count
-                    a /= count
-                    pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+                let inX = x + radius
+                if inX < width {
+                    let pIn = pixels[rowBase + inX]
+                    sumA += (pIn >> 24) & 0xFF
+                    sumR += (pIn >> 16) & 0xFF
+                    sumG += (pIn >> 8) & 0xFF
+                    sumB += pIn & 0xFF
+                    count += 1
                 }
+                a = sumA / count
+                r = sumR / count
+                g = sumG / count
+                b = sumB / count
+                temp[rowBase + x] = (a << 24) | (r << 16) | (g << 8) | b
             }
         }
         
-        // Apply vertical blur
-        for y in 0..<height {
-            for x in 0..<width {
-                var r = 0, g = 0, b = 0, a = 0
-                var count = 0
-                
-                for dy in -radius...radius {
-                    let ny = y + dy
-                    if ny >= 0 && ny < height {
-                        let pixel = pixels[ny * width + x]
-                        r += (pixel >> 16) & 0xFF
-                        g += (pixel >> 8) & 0xFF
-                        b += pixel & 0xFF
-                        a += (pixel >> 24) & 0xFF
-                        count += 1
-                    }
+        // Vertical pass back into pixels
+        for x in 0..<width {
+            var sumA = 0
+            var sumR = 0
+            var sumG = 0
+            var sumB = 0
+            var count = 0
+            
+            // Initialize window for y=0: [0 ... min(radius, height-1)]
+            let bottomInit = min(radius, height - 1)
+            for ny in 0...bottomInit {
+                let p = temp[ny * width + x]
+                sumA += (p >> 24) & 0xFF
+                sumR += (p >> 16) & 0xFF
+                sumG += (p >> 8) & 0xFF
+                sumB += p & 0xFF
+                count += 1
+            }
+            
+            // y=0
+            var a = sumA / count
+            var r = sumR / count
+            var g = sumG / count
+            var b = sumB / count
+            pixels[0 * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+            
+            if height == 1 { continue }
+            
+            // Slide window down the column
+            for y in 1..<height {
+                let outY = y - radius - 1
+                if outY >= 0 {
+                    let pOut = temp[outY * width + x]
+                    sumA -= (pOut >> 24) & 0xFF
+                    sumR -= (pOut >> 16) & 0xFF
+                    sumG -= (pOut >> 8) & 0xFF
+                    sumB -= pOut & 0xFF
+                    count -= 1
                 }
-                
-                if count > 0 {
-                    r /= count
-                    g /= count
-                    b /= count
-                    a /= count
-                    pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
+                let inY = y + radius
+                if inY < height {
+                    let pIn = temp[inY * width + x]
+                    sumA += (pIn >> 24) & 0xFF
+                    sumR += (pIn >> 16) & 0xFF
+                    sumG += (pIn >> 8) & 0xFF
+                    sumB += pIn & 0xFF
+                    count += 1
                 }
+                a = sumA / count
+                r = sumR / count
+                g = sumG / count
+                b = sumB / count
+                pixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b
             }
         }
         
@@ -386,7 +504,7 @@ public actor AndroidImageProcessor {
     #endif
 }
 
-#if SKIP
+    #if SKIP
 extension kotlin.ByteArray {
     func toSwiftData() -> Data {
         return Data(platformValue: self)
