@@ -855,12 +855,15 @@ public actor MetalProcessor {
             }
             if RemoteVideoTraceLogging.enabled, didLogIOSCVPixelBufferConversion == false {
                 didLogIOSCVPixelBufferConversion = true
+                let srcW = CVPixelBufferGetWidth(pixelBuffer)
+                let srcH = CVPixelBufferGetHeight(pixelBuffer)
+                let traceLine = "[MetalProcessor] iOS CV->Metal srcFormat=\(pixelFormatType) srcPlanes=\(planeCount) " +
+                    "srcSize=\(srcW)x\(srcH) " +
+                    "dstTextureFormat=\(texture.pixelFormat.rawValue) dstTextureSize=\(texture.width)x\(texture.height) " +
+                    "parentBounds=\(parentBounds) scaleX=\(scaleInfo.scaleX) scaleY=\(scaleInfo.scaleY)"
                 RemoteVideoTraceLogging.logger.log(
                     level: .trace,
-                    message: "[MetalProcessor] iOS CV->Metal srcFormat=\(pixelFormatType) srcPlanes=\(planeCount) " +
-                        "srcSize=\(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer)) " +
-                        "dstTextureFormat=\(texture.pixelFormat.rawValue) dstTextureSize=\(texture.width)x\(texture.height) " +
-                        "parentBounds=\(parentBounds) scaleX=\(scaleInfo.scaleX) scaleY=\(scaleInfo.scaleY)"
+                    message: Message(stringLiteral: traceLine)
                 )
             }
             #else
@@ -1399,11 +1402,12 @@ extension MetalProcessor  {
         computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         if RemoteVideoTraceLogging.enabled, didLogIOSI420Conversion == false {
             didLogIOSI420Conversion = true
+            let traceLine = "[MetalProcessor] iOS I420->Metal srcSize=\(i420Buffer.width)x\(i420Buffer.height) " +
+                "srcStrides(y/u/v)=\(i420Buffer.strideY)/\(i420Buffer.strideU)/\(i420Buffer.strideV) " +
+                "dstTextureFormat=\(rgbTexture.pixelFormat.rawValue) dstTextureSize=\(rgbTexture.width)x\(rgbTexture.height)"
             RemoteVideoTraceLogging.logger.log(
                 level: .trace,
-                message: "[MetalProcessor] iOS I420->Metal srcSize=\(i420Buffer.width)x\(i420Buffer.height) " +
-                    "srcStrides(y/u/v)=\(i420Buffer.strideY)/\(i420Buffer.strideU)/\(i420Buffer.strideV) " +
-                    "dstTextureFormat=\(rgbTexture.pixelFormat.rawValue) dstTextureSize=\(rgbTexture.width)x\(rgbTexture.height)"
+                message: Message(stringLiteral: traceLine)
             )
         }
         defer {
@@ -1492,15 +1496,17 @@ extension MetalProcessor  {
 
         if RemoteVideoTraceLogging.enabled, i420PlaneUploadLogCount < 10 {
             i420PlaneUploadLogCount += 1
+            let rowSampleY = describePlaneRows(ptr: yData, stride: bytesPerRowY, rowCount: height, logicalWidth: width)
+            let rowSampleU = describePlaneRows(ptr: uData, stride: bytesPerRowU, rowCount: chromaHeight, logicalWidth: chromaWidth)
+            let rowSampleV = describePlaneRows(ptr: vData, stride: bytesPerRowV, rowCount: chromaHeight, logicalWidth: chromaWidth)
+            let traceLine = "[MetalProcessor] I420 upload #\(i420PlaneUploadLogCount) " +
+                "size=\(width)x\(height) chroma=\(chromaWidth)x\(chromaHeight) " +
+                "strides(y/u/v)=\(yStride)/\(uStride)/\(vStride) " +
+                "expected(y/u/v)=\(width)/\(chromaWidth)/\(chromaWidth) " +
+                "rowSampleY=\(rowSampleY) rowSampleU=\(rowSampleU) rowSampleV=\(rowSampleV)"
             RemoteVideoTraceLogging.logger.log(
                 level: .trace,
-                message: "[MetalProcessor] I420 upload #\(i420PlaneUploadLogCount) " +
-                    "size=\(width)x\(height) chroma=\(chromaWidth)x\(chromaHeight) " +
-                    "strides(y/u/v)=\(yStride)/\(uStride)/\(vStride) " +
-                    "expected(y/u/v)=\(width)/\(chromaWidth)/\(chromaWidth) " +
-                    "rowSampleY=\(describePlaneRows(ptr: yData, stride: bytesPerRowY, rowCount: height, logicalWidth: width)) " +
-                    "rowSampleU=\(describePlaneRows(ptr: uData, stride: bytesPerRowU, rowCount: chromaHeight, logicalWidth: chromaWidth)) " +
-                    "rowSampleV=\(describePlaneRows(ptr: vData, stride: bytesPerRowV, rowCount: chromaHeight, logicalWidth: chromaWidth))"
+                message: Message(stringLiteral: traceLine)
             )
         }
         

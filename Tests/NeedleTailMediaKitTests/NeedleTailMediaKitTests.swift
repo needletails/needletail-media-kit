@@ -133,7 +133,8 @@ actor MediaKitTests {
             desiredSize: desiredSize,
             aspectRatio: aspectRatio
         )
-        #expect(aspectFillInfo.size.width == desiredSize.width)
+        #expect(aspectFillInfo.size.height == desiredSize.height)
+        #expect(aspectFillInfo.size.width > desiredSize.width)
         #expect(aspectFillInfo.scaleX != 1.0)
         #expect(aspectFillInfo.scaleY != 1.0)
 
@@ -162,6 +163,29 @@ actor MediaKitTests {
         #expect(noneInfo.size == originalSize)
         #expect(noneInfo.scaleX == 1.0)
         #expect(noneInfo.scaleY == 1.0)
+    }
+
+    @Test("MetalProcessor aspect fill uses the larger axis scale")
+    func testMetalProcessorAspectFillUsesFillScale() async {
+        let processor = MetalProcessor()
+
+        let landscapeIntoPortrait = await processor.createSize(
+            for: .aspectFill,
+            originalSize: CGSize(width: 640, height: 360),
+            desiredSize: CGSize(width: 390, height: 844),
+            aspectRatio: 640.0 / 360.0
+        )
+        #expect(landscapeIntoPortrait.size.height == 844)
+        #expect(landscapeIntoPortrait.size.width > 390)
+
+        let portraitIntoLandscape = await processor.createSize(
+            for: .aspectFill,
+            originalSize: CGSize(width: 360, height: 640),
+            desiredSize: CGSize(width: 844, height: 390),
+            aspectRatio: 360.0 / 640.0
+        )
+        #expect(portraitIntoLandscape.size.width == 844)
+        #expect(portraitIntoLandscape.size.height > 390)
     }
 
     // MARK: - MediaCompressor Tests
