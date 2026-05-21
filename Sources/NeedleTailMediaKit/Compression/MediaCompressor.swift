@@ -281,6 +281,7 @@ public actor MediaCompressor {
         exportSession.videoComposition = videoComposition
         //Strip Metadata
         exportSession.metadata = []
+        exportSession.metadataItemFilter = .forSharing()
         
         // Start the export process
         exportSession.outputURL = outputURL
@@ -288,6 +289,54 @@ public actor MediaCompressor {
         
         await exportSession.export()
         
+        if exportSession.status == .completed {
+            return outputURL
+        } else if let error = exportSession.error {
+            throw error
+        } else {
+            throw CompressionErrors.failedToCreateExportSession
+        }
+        #else
+        throw CompressionErrors.unsupportedPlatform
+        #endif
+    }
+
+    /// Rewrites a video container without carrying over source container metadata.
+    ///
+    /// Use this for privacy-sensitive sends when the video does not otherwise need
+    /// compression. The output may preserve media tracks, but should not preserve
+    /// source metadata such as location, creation date, device model, or title.
+    nonisolated public func stripMetadata(
+        inputURL: URL,
+        outputFileType: MediaFileType
+    ) async throws -> URL {
+        #if os(Android)
+        let outputExtension = fileExtensionString(from: outputFileType, defaultExtension: "mp4")
+        return try await androidCompressor.stripMetadata(
+            inputURL: inputURL,
+            outputFileType: outputExtension
+        )
+        #elseif (os(iOS) || os(macOS)) && canImport(AVFoundation)
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let defaultExtension = inputURL.pathExtension.isEmpty ? "mp4" : inputURL.pathExtension
+        let outputExtension = fileExtensionString(from: outputFileType, defaultExtension: defaultExtension)
+        let outputURL = tempDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(outputExtension)
+
+        let asset = AVURLAsset(url: inputURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset.passthrough.rawValue) else {
+            throw CompressionErrors.failedToCreateExportSession
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = outputFileType
+        exportSession.shouldOptimizeForNetworkUse = true
+        exportSession.metadata = []
+        exportSession.metadataItemFilter = .forSharing()
+
+        await exportSession.export()
+
         if exportSession.status == .completed {
             return outputURL
         } else if let error = exportSession.error {

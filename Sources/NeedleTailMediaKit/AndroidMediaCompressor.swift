@@ -338,6 +338,91 @@ public actor AndroidMediaCompressor {
         throw CompressionErrors.unsupportedFormat
         #endif
     }
+
+    /// Remuxes supported media tracks into a fresh MP4 container without copying
+    /// source container metadata such as GPS/location, creation time, or camera model.
+    nonisolated public func stripMetadata(
+        inputURL: URL,
+        outputFileType: String
+    ) async throws -> URL {
+        #if SKIP
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let outputURL = tempDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(outputFileType.isEmpty ? "mp4" : outputFileType)
+
+        let extractor = android.media.MediaExtractor()
+        extractor.setDataSource(inputURL.path)
+        defer {
+            extractor.release()
+        }
+
+        let muxer = android.media.MediaMuxer(outputURL.path, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxerStarted = false
+        defer {
+            if muxerStarted {
+                muxer.stop()
+            }
+            muxer.release()
+        }
+
+        var trackIndexMap: [Int: Int] = [:]
+        var maxInputSize = 1_048_576
+        var rotationDegrees: Int?
+
+        for index in 0..<extractor.getTrackCount() {
+            let format = extractor.getTrackFormat(index)
+            guard let mime = format.getString(android.media.MediaFormat.KEY_MIME) else { continue }
+            guard mime.startsWith("video/") || mime.startsWith("audio/") else { continue }
+            if format.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE) {
+                maxInputSize = max(maxInputSize, format.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+            }
+            if mime.startsWith("video/"), format.containsKey(android.media.MediaFormat.KEY_ROTATION) {
+                rotationDegrees = format.getInteger(android.media.MediaFormat.KEY_ROTATION)
+            }
+            trackIndexMap[index] = muxer.addTrack(format)
+            extractor.selectTrack(index)
+        }
+
+        guard !trackIndexMap.isEmpty else {
+            throw CompressionErrors.noVideoTrack
+        }
+
+        if let rotationDegrees {
+            muxer.setOrientationHint(rotationDegrees)
+        }
+        muxer.start()
+        muxerStarted = true
+
+        let buffer = java.nio.ByteBuffer.allocateDirect(maxInputSize)
+        let bufferInfo = android.media.MediaCodec.BufferInfo()
+
+        while true {
+            let inputTrackIndex = extractor.getSampleTrackIndex()
+            if inputTrackIndex < 0 {
+                break
+            }
+            guard let outputTrackIndex = trackIndexMap[inputTrackIndex] else {
+                extractor.advance()
+                continue
+            }
+
+            buffer.clear()
+            let sampleSize = extractor.readSampleData(buffer, 0)
+            if sampleSize < 0 {
+                break
+            }
+
+            bufferInfo.set(0, sampleSize, extractor.getSampleTime(), extractor.getSampleFlags())
+            muxer.writeSampleData(outputTrackIndex, buffer, bufferInfo)
+            extractor.advance()
+        }
+
+        return outputURL
+        #else
+        throw CompressionErrors.unsupportedFormat
+        #endif
+    }
     
     #if SKIP
     /// Converts an Android Image (YUV_420_888 format) to Bitmap (RGB format) for CPU-based processing
@@ -445,4 +530,3 @@ public actor AndroidMediaCompressor {
         }
     }
 }
-
