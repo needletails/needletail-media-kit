@@ -220,6 +220,63 @@ public actor AndroidImageProcessor {
         #endif
     }
     
+    /// Returns the longest edge length in pixels, or nil when the payload cannot be decoded.
+    public static func longestSide(from imageData: Data) -> Int? {
+        #if SKIP
+        let options = android.graphics.BitmapFactory.Options()
+        options.inJustDecodeBounds = true
+        let bytes = imageData.platformValue
+        guard bytes.size > 0 else { return nil }
+        _ = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        let w = max(options.outWidth, 1)
+        let h = max(options.outHeight, 1)
+        return max(w, h)
+        #else
+        return nil
+        #endif
+    }
+
+    /// Decodes, optionally scales, and re-encodes JPEG without relying on EXIF stripping.
+    public static func reencodeJPEG(
+        imageData: Data,
+        maxSide: Int,
+        compressionQuality: CGFloat
+    ) throws -> Data {
+        #if SKIP
+        let byteArray = imageData.platformValue
+        guard byteArray.size > 0 else {
+            throw ImageErrors.invalidImageData
+        }
+        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+            throw ImageErrors.invalidImageData
+        }
+        return try encodeScaledJPEG(from: bitmap, maxSide: maxSide, compressionQuality: compressionQuality)
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
+    }
+
+    /// Preferred upload path: orientation-correct JPEG with EXIF stripped when possible.
+    public static func makeUploadJPEG(
+        imageData: Data,
+        maxSide: Int,
+        compressionQuality: CGFloat
+    ) throws -> Data {
+        do {
+            return try makeOrientationCorrectThumbnailJPEG(
+                imageData: imageData,
+                maxSide: maxSide,
+                compressionQuality: compressionQuality
+            )
+        } catch {
+            return try reencodeJPEG(
+                imageData: imageData,
+                maxSide: maxSide,
+                compressionQuality: compressionQuality
+            )
+        }
+    }
+
     /// Produces an orientation-correct thumbnail JPEG from image data (Android/Skip).
     /// Reads EXIF orientation, applies rotation via Matrix, scales longest side to `maxSide`, compresses to JPEG.
     /// - Parameters:
@@ -230,14 +287,41 @@ public actor AndroidImageProcessor {
     public static func makeOrientationCorrectThumbnailJPEG(imageData: Data, maxSide: Int, compressionQuality: CGFloat) throws -> Data {
         #if SKIP
         let byteArray = imageData.platformValue
-        let inputStream = java.io.ByteArrayInputStream(byteArray)
-        let exif = android.media.ExifInterface(inputStream)
-        let orientation = exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
-        
+        guard byteArray.size > 0 else {
+            throw ImageErrors.invalidImageData
+        }
+
+        let orientation = readEXIFOrientation(from: byteArray)
         guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
             throw ImageErrors.invalidImageData
         }
-        
+
+        let orientedBitmap = applyOrientation(to: bitmap, orientation: orientation)
+        return try encodeScaledJPEG(
+            from: orientedBitmap,
+            maxSide: maxSide,
+            compressionQuality: compressionQuality
+        )
+        #else
+        throw ImageErrors.unsupportedImageFormat
+        #endif
+    }
+
+    #if SKIP
+    private static func readEXIFOrientation(from byteArray: kotlin.ByteArray) -> Int {
+        do {
+            let inputStream = java.io.ByteArrayInputStream(byteArray)
+            let exif = android.media.ExifInterface(inputStream)
+            return exif.getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL
+            )
+        } catch {
+            return android.media.ExifInterface.ORIENTATION_NORMAL
+        }
+    }
+
+    private static func applyOrientation(to bitmap: android.graphics.Bitmap, orientation: Int) -> android.graphics.Bitmap {
         let degrees: Int
         switch orientation {
         case android.media.ExifInterface.ORIENTATION_ROTATE_90: degrees = 90
@@ -245,36 +329,62 @@ public actor AndroidImageProcessor {
         case android.media.ExifInterface.ORIENTATION_ROTATE_270: degrees = 270
         default: degrees = 0
         }
-        
-        let orientedBitmap: android.graphics.Bitmap
-        if degrees != 0 {
-            let matrix = android.graphics.Matrix()
-            matrix.postRotate(Float(degrees))
-            let w = bitmap.getWidth()
-            let h = bitmap.getHeight()
-            orientedBitmap = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, w, h, matrix, true)
-        } else {
-            orientedBitmap = bitmap
-        }
-        
-        let w = orientedBitmap.getWidth()
-        let h = orientedBitmap.getHeight()
-        let longest = max(w, h)
-        let outW = longest <= maxSide ? w : (w * maxSide / longest)
-        let outH = longest <= maxSide ? h : (h * maxSide / longest)
+        guard degrees != 0 else { return bitmap }
+        let matrix = android.graphics.Matrix()
+        matrix.postRotate(Float(degrees))
+        return android.graphics.Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.getWidth(),
+            bitmap.getHeight(),
+            matrix,
+            true
+        )
+    }
 
-        let scaledBitmap = android.graphics.Bitmap.createScaledBitmap(orientedBitmap, outW, outH, true)
+    private static func encodeScaledJPEG(
+        from sourceBitmap: android.graphics.Bitmap,
+        maxSide: Int,
+        compressionQuality: CGFloat
+    ) throws -> Data {
+        let w = sourceBitmap.getWidth()
+        let h = sourceBitmap.getHeight()
+        guard w > 0, h > 0 else {
+            throw ImageErrors.invalidImageData
+        }
+
+        let boundedMaxSide = max(maxSide, 1)
+        let longest = max(w, h)
+        let outW: Int
+        let outH: Int
+        if longest <= boundedMaxSide || boundedMaxSide >= 16_384 {
+            outW = w
+            outH = h
+        } else {
+            outW = max(1, w * boundedMaxSide / longest)
+            outH = max(1, h * boundedMaxSide / longest)
+        }
+
+        let scaledBitmap = if outW == w && outH == h {
+            sourceBitmap
+        } else {
+            android.graphics.Bitmap.createScaledBitmap(sourceBitmap, outW, outH, true)
+        }
+
         let outputStream = java.io.ByteArrayOutputStream()
-        let quality = Int(compressionQuality * 100.0)
+        let quality = Int(Swift.max(0.0, Swift.min(compressionQuality, 1.0)) * 100.0)
         let success = scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
         guard success else {
             throw ImageErrors.imageProcessingFailed("Failed to compress thumbnail to JPEG")
         }
-        return Data(platformValue: outputStream.toByteArray())
-        #else
-        throw ImageErrors.unsupportedImageFormat
-        #endif
+        let result = outputStream.toByteArray()
+        guard result.size > 0 else {
+            throw ImageErrors.imageProcessingFailed("JPEG encoder returned empty payload")
+        }
+        return Data(platformValue: result)
     }
+    #endif
     
         #if SKIP
     // MARK: - Private Helper Methods
@@ -511,4 +621,3 @@ extension kotlin.ByteArray {
     }
 }
 #endif
-

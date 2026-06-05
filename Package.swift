@@ -20,7 +20,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://source.skip.tools/skip.git", from: "1.6.32"),
         .package(url: "https://source.skip.tools/skip-foundation.git", from: "1.3.10"),
-        .package(url: "https://github.com/needletails/needletail-logger.git", from: "3.1.4")
+        .package(url: "https://github.com/needletails/needletail-logger.git", from: "3.1.5")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
