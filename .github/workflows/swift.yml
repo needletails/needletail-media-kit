@@ -170,6 +170,8 @@ jobs:
   android-robolectric:
     name: Android Robolectric
     runs-on: macos-26
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
 
     steps:
       - name: Check out repository
@@ -207,21 +209,49 @@ jobs:
       - name: Install Skip.tools
         run: |
           brew install skiptools/skip/skip
+          brew install gradle
           skip version
+          gradle --version
 
       - name: Cache Swift and Gradle packages
         uses: actions/cache@v4
         with:
           path: |
             .build
-            ~/.gradle/caches
-            ~/.gradle/wrapper
+            .gradle/caches
+            .gradle/wrapper
           key: ${{ runner.os }}-android-${{ hashFiles('Package.swift', 'Package.resolved', '**/skip.yml') }}
           restore-keys: |
             ${{ runner.os }}-android-
             ${{ runner.os }}-swift-
 
-      - name: Test Android Robolectric
+      - name: Build transpiled Android tests
         env:
           SKIP_GRADLE_VERBOSE: YES
-        run: swift test --configuration release --filter XCSkipTests
+        run: swift test --configuration release --skip XCSkipTests
+
+      - name: Run Android Robolectric tests
+        env:
+          SKIP_GRADLE_VERBOSE: YES
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SKIPSTONE_DIR=$(find .build/plugins/outputs -path '*/NeedleTailMediaKitTests/destination/skipstone' -type d -print -quit)
+          if [[ -z "$SKIPSTONE_DIR" ]]; then
+            echo "Could not locate generated Skip Gradle project" >&2
+            find .build/plugins/outputs -maxdepth 6 -type d | sort
+            exit 1
+          fi
+
+          echo "Using generated Skip project: $SKIPSTONE_DIR"
+          cd "$SKIPSTONE_DIR"
+
+          gradle \
+            testRelease \
+            -PbuildDir=.build/NeedleTailMediaKit \
+            --warning-mode all \
+            --rerun-tasks \
+            --info \
+            --console=plain \
+            --stacktrace
