@@ -28,7 +28,10 @@ jobs:
 
       - name: Xcode version
         if: ${{ runner.os == 'macOS' }}
-        run: xcodebuild -version
+        run: |
+          DEVELOPER_DIR_PATH=$(xcode-select -p)
+          XCODE_APP_PATH=${DEVELOPER_DIR_PATH%/Contents/Developer}
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$XCODE_APP_PATH/Contents/Info.plist"
 
       - name: Require macOS 26 (macOS)
         if: ${{ runner.os == 'macOS' }}
@@ -50,11 +53,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Expecting Xcode major: ${{ matrix.required_xcode_major }}"
-          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
-          echo "$XCODE_VERSION_LINE"
-          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          DEVELOPER_DIR_PATH=$(xcode-select -p)
+          XCODE_APP_PATH=${DEVELOPER_DIR_PATH%/Contents/Developer}
+          XCODE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$XCODE_APP_PATH/Contents/Info.plist")
+          echo "Xcode $XCODE_VERSION"
+          XCODE_MAJOR=${XCODE_VERSION%%.*}
           if [[ "$XCODE_MAJOR" != "${{ matrix.required_xcode_major }}" ]]; then
-            echo "Xcode ${{ matrix.required_xcode_major }} is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            echo "Xcode ${{ matrix.required_xcode_major }} is required on this runner. Found: Xcode $XCODE_VERSION" >&2
             exit 1
           fi
 
@@ -123,11 +128,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
-          echo "$XCODE_VERSION_LINE"
-          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          DEVELOPER_DIR_PATH=$(xcode-select -p)
+          XCODE_APP_PATH=${DEVELOPER_DIR_PATH%/Contents/Developer}
+          XCODE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$XCODE_APP_PATH/Contents/Info.plist")
+          echo "Xcode $XCODE_VERSION"
+          XCODE_MAJOR=${XCODE_VERSION%%.*}
           if [[ "$XCODE_MAJOR" != "26" ]]; then
-            echo "Xcode 26 is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            echo "Xcode 26 is required on this runner. Found: Xcode $XCODE_VERSION" >&2
             exit 1
           fi
 
@@ -187,11 +194,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
-          echo "$XCODE_VERSION_LINE"
-          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          DEVELOPER_DIR_PATH=$(xcode-select -p)
+          XCODE_APP_PATH=${DEVELOPER_DIR_PATH%/Contents/Developer}
+          XCODE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$XCODE_APP_PATH/Contents/Info.plist")
+          echo "Xcode $XCODE_VERSION"
+          XCODE_MAJOR=${XCODE_VERSION%%.*}
           if [[ "$XCODE_MAJOR" != "26" ]]; then
-            echo "Xcode 26 is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            echo "Xcode 26 is required on this runner. Found: Xcode $XCODE_VERSION" >&2
             exit 1
           fi
 
