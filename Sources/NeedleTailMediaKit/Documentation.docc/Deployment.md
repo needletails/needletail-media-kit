@@ -56,13 +56,15 @@ let compressedURL = try await compressor.compressMedia(
 ### Image Processing
 
 ```swift
-if #available(macOS 13.0, iOS 16.0, *) {
+if #available(macOS 14.0, iOS 17.0, *) {
     let processor = ImageProcessor()
     
-    let processedData = try await processor
-        .resizeImage(imageData, to: CGSize(width: 800, height: 600))
-        .applyBlur(radius: 2.0)
-        .applySepia(intensity: 0.3)
+    let resizedData = try await processor.resizeImage(
+        imageData,
+        to: CGSize(width: 800, height: 600)
+    )
+    let blurredData = try await processor.applyBlur(to: resizedData, radius: 2.0)
+    let processedData = try await processor.applySepia(to: blurredData, intensity: 0.3)
 }
 ```
 
@@ -72,13 +74,17 @@ Handle errors appropriately in your application:
 
 ```swift
 do {
-    let result = try await processor.process(data)
-} catch CompressionErrors.insufficientDiskSpace {
-    // Handle disk space issues
-    cleanupTemporaryFiles()
-} catch CompressionErrors.memoryAllocationFailed {
-    // Handle memory issues
-    reduceConcurrency()
+    let result = try await compressor.compressMedia(
+        inputURL: videoURL,
+        presetName: .mediumQuality,
+        originalResolution: CGSize(width: 1920, height: 1080),
+        fileType: .mp4,
+        outputFileType: .mp4
+    )
+} catch MediaCompressor.CompressionErrors.noVideoTrack {
+    // Handle unsupported input
+} catch MediaCompressor.CompressionErrors.failedToCreateExportSession {
+    // Retry later or fall back to stripMetadata(inputURL:outputFileType:)
 } catch {
     // Log and report unknown errors
     print("Processing failed: \(error)")
@@ -88,6 +94,6 @@ do {
 ## See Also
 
 - [Getting Started](GettingStarted.md) - Quick start guide
-- [API Reference](API_REFERENCE.md) - Complete API documentation
+- [API Reference](APIReference.md) - Complete API documentation
 - [MediaCompressor](MediaCompressor.md) - Video compression API
 - [ImageProcessor](ImageProcessor.md) - Image processing API 

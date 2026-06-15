@@ -177,19 +177,36 @@ final class AndroidMediaKitTests: XCTestCase {
         // Test downscaling - use explicit type for Skip
         let scaled640 = await compressor.scaledResolution(for: originalSize, using: MediaCompressor.AVAssetExportPreset.resolution640x480)
         XCTAssertEqual(scaled640.width, 640, accuracy: 1.0)
-        XCTAssertEqual(scaled640.height, 480, accuracy: 1.0)
+        XCTAssertEqual(scaled640.height, 360, accuracy: 1.0)
         
         // Test portrait orientation preservation
         let portraitOriginal = CGSize(width: 1080, height: 1920)
         let scaledPortrait = await compressor.scaledResolution(for: portraitOriginal, using: MediaCompressor.AVAssetExportPreset.resolution640x480)
-        XCTAssertEqual(scaledPortrait.width, 480, accuracy: 1.0)
-        XCTAssertEqual(scaledPortrait.height, 640, accuracy: 1.0)
+        XCTAssertEqual(scaledPortrait.width, 270, accuracy: 1.0)
+        XCTAssertEqual(scaledPortrait.height, 480, accuracy: 1.0)
         
         // Test when original is smaller than preset
         let smallOriginal = CGSize(width: 320, height: 240)
         let scaledSmall = await compressor.scaledResolution(for: smallOriginal, using: MediaCompressor.AVAssetExportPreset.resolution1920x1080)
         XCTAssertEqual(scaledSmall.width, 320, accuracy: 1.0)
         XCTAssertEqual(scaledSmall.height, 240, accuracy: 1.0)
+    }
+
+    func testAndroidMediaCompressorScaledResolution() async {
+        let compressor = AndroidMediaCompressor()
+        let landscape = await compressor.scaledResolution(
+            for: CGSize(width: 1920, height: 1080),
+            using: AndroidMediaCompressor.CompressionPreset.resolution640x480
+        )
+        XCTAssertEqual(landscape.width, 640, accuracy: 1.0)
+        XCTAssertEqual(landscape.height, 360, accuracy: 1.0)
+
+        let portrait = await compressor.scaledResolution(
+            for: CGSize(width: 1080, height: 1920),
+            using: AndroidMediaCompressor.CompressionPreset.resolution640x480
+        )
+        XCTAssertEqual(portrait.width, 270, accuracy: 1.0)
+        XCTAssertEqual(portrait.height, 480, accuracy: 1.0)
     }
 
     func testMediaCompressorPresets() async {

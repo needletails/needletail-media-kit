@@ -110,25 +110,40 @@ public actor AndroidMediaCompressor {
         // Setup MediaExtractor to read input video
         let extractor = android.media.MediaExtractor()
         extractor.setDataSource(inputPath)
+        let audioExtractor = android.media.MediaExtractor()
+        audioExtractor.setDataSource(inputPath)
+        defer {
+            extractor.release()
+            audioExtractor.release()
+        }
         
         // Find video track
         var videoTrackIndex = -1
         var videoMimeType: String? = nil
         var videoFormat: android.media.MediaFormat? = nil
+        var audioTrackIndices: [Int] = []
+        var maxAudioInputSize = 1_048_576
+        var rotationDegrees: Int? = nil
         
         for i in 0..<extractor.getTrackCount() {
             let format = extractor.getTrackFormat(i)
             let mime = format.getString(android.media.MediaFormat.KEY_MIME)
-            if mime != nil && mime!.startsWith("video/") {
+            if mime != nil && mime!.startsWith("video/") && videoTrackIndex < 0 {
                 videoTrackIndex = i
                 videoMimeType = mime
                 videoFormat = format
-                break
+                if format.containsKey(android.media.MediaFormat.KEY_ROTATION) {
+                    rotationDegrees = format.getInteger(android.media.MediaFormat.KEY_ROTATION)
+                }
+            } else if mime != nil && mime!.startsWith("audio/") {
+                audioTrackIndices.append(i)
+                if format.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE) {
+                    maxAudioInputSize = max(maxAudioInputSize, format.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+                }
             }
         }
         
         guard videoTrackIndex >= 0, let mimeType = videoMimeType, let inputFormat = videoFormat else {
-            extractor.release()
             throw CompressionErrors.noVideoTrack
         }
         
@@ -144,6 +159,13 @@ public actor AndroidMediaCompressor {
         
         // Create MediaCodec encoder
         let encoder = android.media.MediaCodec.createEncoderByType(outputMimeType)
+        var encoderStarted = false
+        defer {
+            if encoderStarted {
+                encoder.stop()
+            }
+            encoder.release()
+        }
         
         // Configure encoder format
         let encoderFormat = android.media.MediaFormat.createVideoFormat(
@@ -161,10 +183,30 @@ public actor AndroidMediaCompressor {
         
         // Get input surface for encoder
         let inputSurface = encoder.createInputSurface()
+        defer {
+            inputSurface.release()
+        }
         encoder.start()
+        encoderStarted = true
         
         // Setup MediaMuxer for output
         let muxer = android.media.MediaMuxer(outputPath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxerStarted = false
+        defer {
+            if muxerStarted {
+                muxer.stop()
+            }
+            muxer.release()
+        }
+        var audioTrackIndexMap: [Int: Int] = [:]
+        for audioTrackIndex in audioTrackIndices {
+            let audioFormat = audioExtractor.getTrackFormat(audioTrackIndex)
+            audioTrackIndexMap[audioTrackIndex] = muxer.addTrack(audioFormat)
+            audioExtractor.selectTrack(audioTrackIndex)
+        }
+        if let rotationDegrees {
+            muxer.setOrientationHint(rotationDegrees)
+        }
         
         // For video compression with scaling, we use non-GPU Bitmap-based scaling:
         // 1. Use ImageReader to get Image objects from decoder (YUV format)
@@ -179,9 +221,22 @@ public actor AndroidMediaCompressor {
         // Setup decoder and ImageReader for scaling
         let decoderMimeType = mimeType
         let decoder = android.media.MediaCodec.createDecoderByType(decoderMimeType)
+        var decoderStarted = false
         
         var imageReader: android.media.ImageReader? = nil
         var decoderSurface: android.view.Surface? = nil
+        defer {
+            if decoderStarted {
+                decoder.stop()
+            }
+            decoder.release()
+            if let reader = imageReader {
+                reader.close()
+            }
+            if let surface = decoderSurface {
+                surface.release()
+            }
+        }
         
         if needsScaling {
             // For scaling: use ImageReader to get Image objects from decoder
@@ -200,12 +255,12 @@ public actor AndroidMediaCompressor {
         }
         
         decoder.start()
+        decoderStarted = true
         
         // Processing state
         var inputEOS = false
         var decoderEOS = false
         var encoderEOS = false
-        var muxerStarted = false
         var videoTrackIndexMuxer = -1
         
         // Process video frames
@@ -239,6 +294,8 @@ public actor AndroidMediaCompressor {
             } else if decoderOutputBufferIndex >= 0 {
                 // Decoded frame available
                 if needsScaling {
+                    decoder.releaseOutputBuffer(decoderOutputBufferIndex, true)
+
                     // Get Image from ImageReader (non-blocking)
                     if let reader = imageReader {
                         let image = reader.acquireLatestImage()
@@ -265,9 +322,6 @@ public actor AndroidMediaCompressor {
                             image!.close()
                         }
                     }
-                    
-                    // Release decoder buffer
-                    decoder.releaseOutputBuffer(decoderOutputBufferIndex, false)
                 } else {
                     // No scaling - render directly to encoder's input surface
                     decoder.releaseOutputBuffer(decoderOutputBufferIndex, true) // render=true renders to surface
@@ -314,25 +368,118 @@ public actor AndroidMediaCompressor {
                 }
             }
         }
+
+        if muxerStarted && !audioTrackIndexMap.isEmpty {
+            let audioBuffer = java.nio.ByteBuffer.allocateDirect(maxAudioInputSize)
+            let audioBufferInfo = android.media.MediaCodec.BufferInfo()
+
+            while true {
+                let inputTrackIndex = audioExtractor.getSampleTrackIndex()
+                if inputTrackIndex < 0 {
+                    break
+                }
+                guard let outputTrackIndex = audioTrackIndexMap[inputTrackIndex] else {
+                    audioExtractor.advance()
+                    continue
+                }
+
+                audioBuffer.clear()
+                let sampleSize = audioExtractor.readSampleData(audioBuffer, 0)
+                if sampleSize < 0 {
+                    break
+                }
+
+                audioBufferInfo.set(0, sampleSize, audioExtractor.getSampleTime(), audioExtractor.getSampleFlags())
+                muxer.writeSampleData(outputTrackIndex, audioBuffer, audioBufferInfo)
+                audioExtractor.advance()
+            }
+        }
         
-        // Cleanup resources
-        if muxerStarted {
-            muxer.stop()
+        return outputURL
+        #else
+        throw CompressionErrors.unsupportedFormat
+        #endif
+    }
+
+    /// Remuxes supported media tracks into a fresh MP4 container without copying
+    /// source container metadata such as GPS/location, creation time, or camera model.
+    nonisolated public func stripMetadata(
+        inputURL: URL,
+        outputFileType: String
+    ) async throws -> URL {
+        #if SKIP
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let outputURL = tempDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(outputFileType.isEmpty ? "mp4" : outputFileType)
+
+        let extractor = android.media.MediaExtractor()
+        extractor.setDataSource(inputURL.path)
+        defer {
+            extractor.release()
         }
-        muxer.release()
-        encoder.stop()
-        encoder.release()
-        decoder.stop()
-        decoder.release()
-        extractor.release()
-        inputSurface.release()
-        if let reader = imageReader {
-            reader.close()
+
+        let muxer = android.media.MediaMuxer(outputURL.path, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxerStarted = false
+        defer {
+            if muxerStarted {
+                muxer.stop()
+            }
+            muxer.release()
         }
-        if let surface = decoderSurface {
-            surface.release()
+
+        var trackIndexMap: [Int: Int] = [:]
+        var maxInputSize = 1_048_576
+        var rotationDegrees: Int?
+
+        for index in 0..<extractor.getTrackCount() {
+            let format = extractor.getTrackFormat(index)
+            guard let mime = format.getString(android.media.MediaFormat.KEY_MIME) else { continue }
+            guard mime.startsWith("video/") || mime.startsWith("audio/") else { continue }
+            if format.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE) {
+                maxInputSize = max(maxInputSize, format.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+            }
+            if mime.startsWith("video/"), format.containsKey(android.media.MediaFormat.KEY_ROTATION) {
+                rotationDegrees = format.getInteger(android.media.MediaFormat.KEY_ROTATION)
+            }
+            trackIndexMap[index] = muxer.addTrack(format)
+            extractor.selectTrack(index)
         }
-        
+
+        guard !trackIndexMap.isEmpty else {
+            throw CompressionErrors.noVideoTrack
+        }
+
+        if let rotationDegrees {
+            muxer.setOrientationHint(rotationDegrees)
+        }
+        muxer.start()
+        muxerStarted = true
+
+        let buffer = java.nio.ByteBuffer.allocateDirect(maxInputSize)
+        let bufferInfo = android.media.MediaCodec.BufferInfo()
+
+        while true {
+            let inputTrackIndex = extractor.getSampleTrackIndex()
+            if inputTrackIndex < 0 {
+                break
+            }
+            guard let outputTrackIndex = trackIndexMap[inputTrackIndex] else {
+                extractor.advance()
+                continue
+            }
+
+            buffer.clear()
+            let sampleSize = extractor.readSampleData(buffer, 0)
+            if sampleSize < 0 {
+                break
+            }
+
+            bufferInfo.set(0, sampleSize, extractor.getSampleTime(), extractor.getSampleFlags())
+            muxer.writeSampleData(outputTrackIndex, buffer, bufferInfo)
+            extractor.advance()
+        }
+
         return outputURL
         #else
         throw CompressionErrors.unsupportedFormat
@@ -429,20 +576,20 @@ public actor AndroidMediaCompressor {
     #endif
     
     func scaledResolution(for originalSize: CGSize, using preset: CompressionPreset) -> CGSize {
-        let isPortrait = originalSize.height > originalSize.width
         let presetSize = preset.targetSize
-        let originalArea = originalSize.width * originalSize.height
-        let presetArea = presetSize.width * presetSize.height
-        
-        // If the original area is smaller than the preset area, no scaling is needed.
-        if originalArea < presetArea {
-            return originalSize
-        } else if isPortrait && originalArea > presetArea {
-            // For portrait videos, swap the preset dimensions to preserve orientation.
-            return CGSize(width: presetSize.height, height: presetSize.width)
-        } else {
-            return presetSize
+        let originalWidth = max(originalSize.width, 1)
+        let originalHeight = max(originalSize.height, 1)
+        let widthScale = presetSize.width / originalWidth
+        let heightScale = presetSize.height / originalHeight
+        let scale = min(CGFloat(1), min(widthScale, heightScale))
+
+        func evenDimension(_ value: CGFloat) -> CGFloat {
+            let rounded = max(2, Int(value.rounded()))
+            return CGFloat((rounded / 2) * 2)
         }
+
+        let scaledWidth = evenDimension(originalWidth * scale)
+        let scaledHeight = evenDimension(originalHeight * scale)
+        return CGSize(width: scaledWidth, height: scaledHeight)
     }
 }
-

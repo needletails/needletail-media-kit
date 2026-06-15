@@ -133,9 +133,10 @@ actor MediaKitTests {
             desiredSize: desiredSize,
             aspectRatio: aspectRatio
         )
-        #expect(aspectFillInfo.size.width == desiredSize.width)
-        #expect(aspectFillInfo.scaleX != 1.0)
-        #expect(aspectFillInfo.scaleY != 1.0)
+        #expect(aspectFillInfo.size.height == desiredSize.height)
+        #expect(aspectFillInfo.size.width > desiredSize.width)
+        #expect(aspectFillInfo.scaleX == aspectFillInfo.scaleY)
+        #expect(aspectFillInfo.scaleX >= 1.0)
 
         let aspectFitVerticalInfo = await processor.createSize(
             for: .aspectFitVertical,
@@ -164,6 +165,29 @@ actor MediaKitTests {
         #expect(noneInfo.scaleY == 1.0)
     }
 
+    @Test("MetalProcessor aspect fill uses the larger axis scale")
+    func testMetalProcessorAspectFillUsesFillScale() async {
+        let processor = MetalProcessor()
+
+        let landscapeIntoPortrait = await processor.createSize(
+            for: .aspectFill,
+            originalSize: CGSize(width: 640, height: 360),
+            desiredSize: CGSize(width: 390, height: 844),
+            aspectRatio: 640.0 / 360.0
+        )
+        #expect(landscapeIntoPortrait.size.height == 844)
+        #expect(landscapeIntoPortrait.size.width > 390)
+
+        let portraitIntoLandscape = await processor.createSize(
+            for: .aspectFill,
+            originalSize: CGSize(width: 360, height: 640),
+            desiredSize: CGSize(width: 844, height: 390),
+            aspectRatio: 360.0 / 640.0
+        )
+        #expect(portraitIntoLandscape.size.width == 844)
+        #expect(portraitIntoLandscape.size.height > 390)
+    }
+
     // MARK: - MediaCompressor Tests
 
     @available(macOS 13.0, iOS 16.0, *)
@@ -175,13 +199,13 @@ actor MediaKitTests {
         // Test downscaling
         let scaled640 = await compressor.scaledResolution(for: originalSize, using: .resolution640x480)
         #expect(scaled640.width == 640)
-        #expect(scaled640.height == 480)
+        #expect(scaled640.height == 360)
         
         // Test portrait orientation preservation
         let portraitOriginal = CGSize(width: 1080, height: 1920)
         let scaledPortrait = await compressor.scaledResolution(for: portraitOriginal, using: .resolution640x480)
-        #expect(scaledPortrait.width == 480)
-        #expect(scaledPortrait.height == 640)
+        #expect(scaledPortrait.width == 270)
+        #expect(scaledPortrait.height == 480)
         
         // Test when original is smaller than preset
         let smallOriginal = CGSize(width: 320, height: 240)

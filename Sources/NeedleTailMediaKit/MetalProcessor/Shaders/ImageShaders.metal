@@ -114,16 +114,17 @@ kernel void ycbcrToRgb(texture2d<half, access::read> yTexture [[texture(0)]],
                        texture2d<half, access::write> rgbTexture [[texture(2)]],
                        uint2 gid [[thread_position_in_grid]]) {
     
-    // Get the YUV values from the input textures
+    // Most WebRTC-decoded Apple video frames arrive as limited-range YUV.
+    // Use BT.709 video-range coefficients so remote H264/HD content does not skew green.
     half y = yTexture.read(gid).r;
     half2 uv = uvTexture.read(gid / 2).rg - half2(0.5h, 0.5h);
     half u = uv.x;
     half v = uv.y;
+    half yPrime = max(y - half(16.0h / 255.0h), half(0.0h)) * half(255.0h / 219.0h);
     
-    // BT.601 YUV to RGB conversion
-    half r = y + half(1.403) * v;
-    half g = y - half(0.344) * u - half(0.714) * v;
-    half b = y + half(1.770) * u;
+    half r = yPrime + half(1.7927411h) * v;
+    half g = yPrime - half(0.2132486h) * u - half(0.5329093h) * v;
+    half b = yPrime + half(2.1124018h) * u;
     
     // Write the RGB values to the output texture
     rgbTexture.write(half4(saturate(r), saturate(g), saturate(b), half(1.0)), gid);
@@ -135,18 +136,17 @@ kernel void i420ToRgb(texture2d<half, access::read> yTexture [[texture(0)]],
                       texture2d<half, access::write> rgbTexture [[texture(3)]],
                       uint2 gid [[thread_position_in_grid]]) {
     
-    // Get the YUV values from the input textures
     half y = yTexture.read(gid).r;
     
-    // Since U and V are subsampled by 2 horizontally and vertically
     uint2 uvGid = gid / 2;
-    half u = uTexture.read(uvGid).r - half(0.5); // U is subsampled by 2
-    half v = vTexture.read(uvGid).r - half(0.5); // V is subsampled by 2
+    half u = uTexture.read(uvGid).r - half(0.5);
+    half v = vTexture.read(uvGid).r - half(0.5);
+    half yPrime = max(y - half(16.0h / 255.0h), half(0.0h)) * half(255.0h / 219.0h);
     
-    // BT.601 YUV to RGB conversion
-    half r = y + half(1.403) * v;
-    half g = y - half(0.344) * u - half(0.714) * v;
-    half b = y + half(1.770) * u;
+    // Match NV12 conversion: BT.709 video-range for Apple/WebRTC remote video.
+    half r = yPrime + half(1.7927411h) * v;
+    half g = yPrime - half(0.2132486h) * u - half(0.5329093h) * v;
+    half b = yPrime + half(2.1124018h) * u;
     
     
     // Write the RGB values to the output texture

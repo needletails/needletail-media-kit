@@ -11,9 +11,27 @@
 import MetalKit
 import CoreMedia.CMTime
 import Vision
+import Foundation
+import NeedleTailLogger
+import CoreImage
 #if canImport(UIKit)
 import UIKit
 #endif
+
+/// Matches `PQSRTCDiagnostics.remoteVideoTraceLoggingEnabled` in PQSRTC: DEBUG on by default, Release when
+/// `PQSRTC_REMOTE_VIDEO_TRACE_LOGGING=1`.
+private enum RemoteVideoTraceLogging {
+    static var enabled: Bool {
+#if DEBUG
+        true
+#else
+        ProcessInfo.processInfo.environment["PQSRTC_REMOTE_VIDEO_TRACE_LOGGING"] == "1"
+#endif
+    }
+
+    /// `.trace` minimum so `log(level: .trace, …)` is not filtered by the logger threshold.
+    static let logger = NeedleTailLogger("[MetalProcessor:RemoteVideo]", level: .trace)
+}
 
 public actor MetalProcessor {
     
@@ -75,8 +93,22 @@ public actor MetalProcessor {
     var i420ToRgbKernelPipeline: MTLComputePipelineState?
     var blurPipelineState: MTLComputePipelineState?
     let colorSpace: [CIImageOption: Any] = [CIImageOption.colorSpace: CGColorSpaceCreateDeviceRGB()]
+    lazy var textureRenderContext: CIContext = {
+        CIContext(
+            mtlDevice: device,
+            options: [
+                .useSoftwareRenderer: false,
+                .cacheIntermediates: false
+            ]
+        )
+    }()
+    private var didLogIOSCVPixelBufferConversion = false
+    private var didLogIOSI420Conversion = false
+    private var i420PlaneUploadLogCount = 0
 
     var destinationBuffer = vImage_Buffer()
+    private var destinationBufferWidth = 0
+    private var destinationBufferHeight = 0
     var cgImageFormat = vImage_CGImageFormat(bitsPerComponent: 8,
                                                           bitsPerPixel: 32,
                                                           colorSpace: nil,
@@ -85,6 +117,10 @@ public actor MetalProcessor {
                                                           decode: nil,
                                                           renderingIntent: .defaultIntent)
     
+    public static var isSupported: Bool {
+        MTLCreateSystemDefaultDevice() != nil
+    }
+
     public init() {
         do {
             guard let device = MTLCreateSystemDefaultDevice() else {
@@ -154,6 +190,32 @@ public actor MetalProcessor {
         return metalTexture
     }
     
+    private func createTextureViaCoreImage(from pixelBuffer: CVPixelBuffer) throws -> MTLTexture {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw MetalScalingErrors.failedToCreateTexture
+        }
+        
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        textureRenderContext.render(
+            ciImage,
+            to: texture,
+            commandBuffer: nil,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height),
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        return texture
+    }
+    
     nonisolated(unsafe) internal var infoYpCbCrToARGB = vImage_YpCbCrToARGB()
     
     /// This method uses the Accelerate Framework into rder to set up the conversion of YUV data to RGB data
@@ -183,7 +245,12 @@ public actor MetalProcessor {
         _ = pixelBuffer.metalPixelFormat
         var error = kvImageNoError
         
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else {
+            throw MetalScalingErrors.failedToLockPixelBuffer
+        }
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+        }
         
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -208,7 +275,10 @@ public actor MetalProcessor {
         )
         
         // Allocate the destination buffer (RGB)
-        if destinationBuffer.data == nil {
+        if destinationBuffer.data == nil || destinationBufferWidth != width || destinationBufferHeight != height {
+            if destinationBuffer.data != nil {
+                free(destinationBuffer.data)
+            }
             error = vImageBuffer_Init(&destinationBuffer,
                                       vImagePixelCount(height),
                                       vImagePixelCount(width),
@@ -218,6 +288,8 @@ public actor MetalProcessor {
             guard error == kvImageNoError else {
                 return nil
             }
+            destinationBufferWidth = width
+            destinationBufferHeight = height
         }
         
         // Temporary vImage buffer pointing to destination
@@ -282,7 +354,6 @@ public actor MetalProcessor {
             throw NSError(domain: "vImageBuffer_CopyToCVPixelBuffer failed", code: Int(error), userInfo: nil)
         }
 
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
         return outputPixelBuffer
     }
     
@@ -310,7 +381,7 @@ public actor MetalProcessor {
         }
         
         guard let pixelBuffer = pixelBuffer else {
-            fatalError("Always should procuce a pixel buffer")
+            throw MetalScalingErrors.failedToCreateOutputPixelBuffer
         }
         return pixelBuffer
     }
@@ -474,6 +545,86 @@ public actor MetalProcessor {
         return rgbTexture
     }
     
+    public func convertPlanar420ToRGB(
+        cvPixelBuffer: CVPixelBuffer,
+        device: MTLDevice
+    ) throws -> MTLTexture {
+        let cache = self.textureCache
+        
+        guard kCVReturnSuccess == CVPixelBufferLockBaseAddress(cvPixelBuffer, .readOnly) else {
+            throw MetalScalingErrors.failedToLockPixelBuffer
+        }
+        defer { CVPixelBufferUnlockBaseAddress(cvPixelBuffer, .readOnly) }
+        
+        let yTexture = try createMTLTextureForPlane(
+            cvPixelBuffer: cvPixelBuffer,
+            planeIndex: 0,
+            textureCache: cache,
+            format: .r8Unorm,
+            device: device
+        )
+        
+        let uTexture = try createMTLTextureForPlane(
+            cvPixelBuffer: cvPixelBuffer,
+            planeIndex: 1,
+            textureCache: cache,
+            format: .r8Unorm,
+            device: device
+        )
+        
+        let vTexture = try createMTLTextureForPlane(
+            cvPixelBuffer: cvPixelBuffer,
+            planeIndex: 2,
+            textureCache: cache,
+            format: .r8Unorm,
+            device: device
+        )
+        
+        let rgbTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: CVPixelBufferGetWidth(cvPixelBuffer),
+            height: CVPixelBufferGetHeight(cvPixelBuffer),
+            mipmapped: false
+        )
+        rgbTextureDescriptor.usage = [.shaderRead, .shaderWrite]
+        
+        guard let rgbTexture = device.makeTexture(descriptor: rgbTextureDescriptor) else {
+            throw MetalScalingErrors.failedToCreateTexture
+        }
+        
+        if i420ToRgbKernelPipeline == nil {
+            i420ToRgbKernelPipeline = try createComputePipeline(device: device, shaderName: "i420ToRgb")
+        }
+        
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalScalingErrors.errorSettingUpEncoder
+        }
+        
+        guard let i420ToRgbKernelPipeline else {
+            throw MetalScalingErrors.failedToCreatePipeline
+        }
+        
+        computeEncoder.setComputePipelineState(i420ToRgbKernelPipeline)
+        computeEncoder.setTexture(yTexture, index: 0)
+        computeEncoder.setTexture(uTexture, index: 1)
+        computeEncoder.setTexture(vTexture, index: 2)
+        computeEncoder.setTexture(rgbTexture, index: 3)
+        
+        let w = i420ToRgbKernelPipeline.threadExecutionWidth
+        let h = max(1, i420ToRgbKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        defer {
+            computeEncoder.endEncoding()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
+        
+        return rgbTexture
+    }
+    
     public func createMTLTextureForPlane(
         cvPixelBuffer: CVPixelBuffer,
         planeIndex: Int,
@@ -625,41 +776,47 @@ public actor MetalProcessor {
         switch scaleMode {
         case .aspectFitVertical:
             //This is correct for vertical, don't change it
-            size.width = aspectRatio != 0 ? desiredSize.height / aspectRatio : desiredSize.width
+            size.width = aspectRatio != 0 ? desiredSize.height * aspectRatio : desiredSize.width
             size.height = desiredSize.height
             
             if originalSize.width > originalSize.height {
                 size.height = desiredSize.height
-                size.width = size.height * aspectRatio
+                if aspectRatio != 0 {
+                    size.width = size.height * aspectRatio
+                } else {
+                    size.width = desiredSize.width
+                }
             }
             
         case .aspectFitHorizontal:
-            //This is correct for horizontal, don't change it
-            size.height = aspectRatio != 0 ? desiredSize.width / aspectRatio : desiredSize.height
             size.width = desiredSize.width
+            size.height = aspectRatio != 0 ? desiredSize.width / aspectRatio : desiredSize.height
             
-            if originalSize.width < originalSize.height {
-                size.width = desiredSize.width
-                size.height = size.width * aspectRatio
+            // If fitting by width would overflow vertically (common for portrait video inside
+            // landscape call tiles), clamp by height instead so the aspect ratio stays correct.
+            if size.height > desiredSize.height {
+                size.height = desiredSize.height
+                if aspectRatio != 0 {
+                    size.width = desiredSize.height * aspectRatio
+                } else {
+                    size.width = desiredSize.width
+                }
             }
             
         case .aspectFill:
-            //This is correct for fill, don't change it
-            if originalSize.width > originalSize.height {
-                size.width = desiredSize.width
-                size.height = aspectRatio != 0 ? desiredSize.width / aspectRatio : desiredSize.height
-            } else {
-                size.height = desiredSize.height
-                size.width = aspectRatio != 0 ? desiredSize.height / aspectRatio : desiredSize.width
-            }
+            let widthScale = desiredSize.width / max(originalSize.width, 1)
+            let heightScale = desiredSize.height / max(originalSize.height, 1)
+            let fillScale = max(widthScale, heightScale)
+            size.width = originalSize.width * fillScale
+            size.height = originalSize.height * fillScale
             
         case .none:
             size.width = originalSize.width
             size.height = originalSize.height
         }
         
-        scaleX = size.width / originalSize.width
-        scaleY = size.height / originalSize.height
+        scaleX = originalSize.width > 0 ? size.width / originalSize.width : 1
+        scaleY = originalSize.height > 0 ? size.height / originalSize.height : 1
         return ScaledInfo(size: size, scaleX: scaleX, scaleY: scaleY)
     }
     
@@ -685,18 +842,76 @@ public actor MetalProcessor {
         aspectRatio: CGFloat
     ) async throws -> TextureInfo {
         if let pixelBuffer = pixelBuffer {
-            let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer)
             var texture: MTLTexture!
-//            this is 2vuy(This happens on mac's camera capture)
+            #if os(iOS)
+            // Route iOS CVPixelBuffer conversion by concrete source format.
+            // Remote fallback path feeds NV12 buffers here; use the Metal NV12 shader path directly.
+            let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            let planeCount = CVPixelBufferGetPlaneCount(pixelBuffer)
+            if pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                || pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                || planeCount == 2 {
+                texture = try convertYUVToRGB(
+                    cvPixelBuffer: pixelBuffer,
+                    device: self.device
+                )
+            } else if pixelFormatType == kCVPixelFormatType_420YpCbCr8Planar
+                        || pixelFormatType == kCVPixelFormatType_420YpCbCr8PlanarFullRange
+                        || planeCount == 3 {
+                texture = try convertPlanar420ToRGB(
+                    cvPixelBuffer: pixelBuffer,
+                    device: self.device
+                )
+            } else if pixelFormatType == kCVPixelFormatType_32BGRA {
+                texture = try createTexture(from: pixelBuffer, device: self.device)
+            } else {
+                // Keep CI as a compatibility fallback for uncommon formats.
+                texture = try createTextureViaCoreImage(from: pixelBuffer)
+            }
+            if RemoteVideoTraceLogging.enabled, didLogIOSCVPixelBufferConversion == false {
+                didLogIOSCVPixelBufferConversion = true
+                let srcW = CVPixelBufferGetWidth(pixelBuffer)
+                let srcH = CVPixelBufferGetHeight(pixelBuffer)
+                let traceLine = "[MetalProcessor] iOS CV->Metal srcFormat=\(pixelFormatType) srcPlanes=\(planeCount) " +
+                    "srcSize=\(srcW)x\(srcH) " +
+                    "dstTextureFormat=\(texture.pixelFormat.rawValue) dstTextureSize=\(texture.width)x\(texture.height) " +
+                    "parentBounds=\(parentBounds) scaleX=\(scaleInfo.scaleX) scaleY=\(scaleInfo.scaleY)"
+                RemoteVideoTraceLogging.logger.log(
+                    level: .trace,
+                    message: Message(stringLiteral: traceLine)
+                )
+            }
+            #else
+            let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            let planeCount = CVPixelBufferGetPlaneCount(pixelBuffer)
             if pixelFormatType == kCVPixelFormatType_422YpCbCr8 {
                 texture = try convert2VUYToRGB(
                     cvPixelBuffer: pixelBuffer,
                     device: self.device)
-            } else {
+            } else if pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                        || pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                        || planeCount == 2 {
                 texture = try convertYUVToRGB(
                     cvPixelBuffer: pixelBuffer,
                     device: self.device)
+            } else if pixelFormatType == kCVPixelFormatType_420YpCbCr8Planar
+                        || pixelFormatType == kCVPixelFormatType_420YpCbCr8PlanarFullRange
+                        || planeCount == 3 {
+                texture = try convertPlanar420ToRGB(
+                    cvPixelBuffer: pixelBuffer,
+                    device: self.device)
+            } else if pixelFormatType == kCVPixelFormatType_32BGRA {
+                texture = try createTexture(from: pixelBuffer, device: self.device)
+            } else {
+                throw NSError(
+                    domain: "MetalProcessor",
+                    code: Int(pixelFormatType),
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Unsupported CVPixelBuffer format \(pixelFormatType) with \(planeCount) planes"
+                    ]
+                )
             }
+            #endif
             
             let resizedTexture = try resizeImage(
                 sourceTexture: texture,
@@ -734,10 +949,12 @@ public actor MetalProcessor {
         
         let filter = MPSImageLanczosScale(device: device)
         
-        //DESTINATION NEEDS TO BE SIZE OF PARENT VIEW
+        // DESTINATION NEEDS TO BE SIZE OF PARENT VIEW (Metal rejects 0×0 descriptors).
+        let destW = max(1, Int(ceil(parentBounds.width)))
+        let destH = max(1, Int(ceil(parentBounds.height)))
         let destTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: sourceTexture.pixelFormat,
-                                                                             width: Int(parentBounds.width),
-                                                                             height: Int(parentBounds.height),
+                                                                             width: destW,
+                                                                             height: destH,
                                                                              mipmapped: false)
         destTextureDescriptor.usage = [.shaderRead, .shaderWrite]
         guard let destTexture = device.makeTexture(descriptor: destTextureDescriptor) else {
@@ -787,7 +1004,11 @@ public actor MetalProcessor {
         )
     }
     
-    public func mirrorTexture(sourceTexture: MTLTexture) throws -> MTLTexture {
+    public func mirrorTexture(
+        sourceTexture: MTLTexture,
+        horizontal: Bool = true,
+        vertical: Bool = false
+    ) throws -> TextureInfo {
         // Reuse Texture Descriptor
         let destinationDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: sourceTexture.pixelFormat,
                                                                              width: sourceTexture.width,
@@ -817,8 +1038,8 @@ public actor MetalProcessor {
         // Set Compute Pipeline State
         computeEncoder.setComputePipelineState(flipKernelPipeline)
         
-        var horizontal: Bool = true // Assuming you have a boolean indicating horizontal flip
-        var vertical: Bool = false
+        var horizontal = horizontal
+        var vertical = vertical
         // Set Compute Encoder Parameters
         computeEncoder.setBytes(&horizontal, length: MemoryLayout<Bool>.size, index: 0)
         computeEncoder.setBytes(&vertical, length: MemoryLayout<Bool>.size, index: 1)
@@ -840,7 +1061,7 @@ public actor MetalProcessor {
         }
         
         // Return Destination Texture
-        return destinationTexture
+        return try getTextureInfo(texture: destinationTexture)
     }
     
     public func blurTexture(sourceTexture: MTLTexture) async throws -> MTLTexture? {
@@ -1080,7 +1301,73 @@ extension MetalProcessor  {
         }
     }
     
+    private func makeNV12PixelBufferFromI420(_ i420Buffer: RTCI420Buffer) throws -> CVPixelBuffer {
+        let width = Int(i420Buffer.width)
+        let height = Int(i420Buffer.height)
+        
+        var pixelBuffer: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            attrs as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            throw MetalScalingErrors.failedToCreateOutputPixelBuffer
+        }
+        
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        
+        guard let yDestBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let uvDestBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else {
+            throw MetalScalingErrors.failedToCreateOutputPixelBuffer
+        }
+        
+        let yDestStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let uvDestStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+        
+        let ySrcStride = Int(i420Buffer.strideY)
+        for row in 0..<height {
+            let src = i420Buffer.dataY.advanced(by: row * ySrcStride)
+            let dst = yDestBase.advanced(by: row * yDestStride)
+            memcpy(dst, src, width)
+        }
+        
+        let chromaWidth = (width + 1) / 2
+        let chromaHeight = (height + 1) / 2
+        let uSrcStride = Int(i420Buffer.strideU)
+        let vSrcStride = Int(i420Buffer.strideV)
+        
+        for row in 0..<chromaHeight {
+            let uSrc = i420Buffer.dataU.advanced(by: row * uSrcStride)
+            let vSrc = i420Buffer.dataV.advanced(by: row * vSrcStride)
+            let uvDst = uvDestBase.advanced(by: row * uvDestStride).assumingMemoryBound(to: UInt8.self)
+            for col in 0..<chromaWidth {
+                uvDst[col * 2] = uSrc[col]
+                uvDst[col * 2 + 1] = vSrc[col]
+            }
+        }
+        
+        return pixelBuffer
+    }
+    
+    private func createTextureFromI420ViaCoreImage(_ i420Buffer: RTCI420Buffer) throws -> MTLTexture {
+        let pixelBuffer = try makeNV12PixelBufferFromI420(i420Buffer)
+        return try createTextureViaCoreImage(from: pixelBuffer)
+    }
+    
     public func createi420Texture(from i420Buffer: RTCI420Buffer, device: MTLDevice) throws -> MTLTexture {
+        #if os(iOS)
         let yPlane = i420Buffer.dataY
         let uPlane = i420Buffer.dataU
         let vPlane = i420Buffer.dataV
@@ -1089,6 +1376,73 @@ extension MetalProcessor  {
             yData: yPlane,
             uData: uPlane,
             vData: vPlane,
+            yStride: Int(i420Buffer.strideY),
+            uStride: Int(i420Buffer.strideU),
+            vStride: Int(i420Buffer.strideV),
+            width: Int(i420Buffer.width),
+            height: Int(i420Buffer.height),
+            device: device
+        )
+        let rgbTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: Int(i420Buffer.width),
+            height: Int(i420Buffer.height),
+            mipmapped: false
+        )
+        rgbTextureDescriptor.usage = [.shaderRead, .shaderWrite]
+        guard let rgbTexture = device.makeTexture(descriptor: rgbTextureDescriptor) else {
+            throw MetalScalingErrors.failedToCreateTexture
+        }
+        
+        if i420ToRgbKernelPipeline == nil {
+            i420ToRgbKernelPipeline = try createComputePipeline(device: device, shaderName: "i420ToRgb")
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw MetalScalingErrors.errorSettingUpEncoder
+        }
+        guard let i420ToRgbKernelPipeline = i420ToRgbKernelPipeline else {
+            throw MetalScalingErrors.failedToCreatePipeline
+        }
+        computeEncoder.setComputePipelineState(i420ToRgbKernelPipeline)
+        computeEncoder.setTexture(textures.yTexture, index: 0)
+        computeEncoder.setTexture(textures.uTexture, index: 1)
+        computeEncoder.setTexture(textures.vTexture, index: 2)
+        computeEncoder.setTexture(rgbTexture, index: 3)
+        
+        let w = i420ToRgbKernelPipeline.threadExecutionWidth
+        let h = max(1, i420ToRgbKernelPipeline.maxTotalThreadsPerThreadgroup / w)
+        let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: rgbTexture.width, height: rgbTexture.height, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        if RemoteVideoTraceLogging.enabled, didLogIOSI420Conversion == false {
+            didLogIOSI420Conversion = true
+            let traceLine = "[MetalProcessor] iOS I420->Metal srcSize=\(i420Buffer.width)x\(i420Buffer.height) " +
+                "srcStrides(y/u/v)=\(i420Buffer.strideY)/\(i420Buffer.strideU)/\(i420Buffer.strideV) " +
+                "dstTextureFormat=\(rgbTexture.pixelFormat.rawValue) dstTextureSize=\(rgbTexture.width)x\(rgbTexture.height)"
+            RemoteVideoTraceLogging.logger.log(
+                level: .trace,
+                message: Message(stringLiteral: traceLine)
+            )
+        }
+        defer {
+            computeEncoder.endEncoding()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
+        return rgbTexture
+        #else
+        let yPlane = i420Buffer.dataY
+        let uPlane = i420Buffer.dataU
+        let vPlane = i420Buffer.dataV
+        
+        let textures = try createMetalTexturesFromYUVPlanes(
+            yData: yPlane,
+            uData: uPlane,
+            vData: vPlane,
+            yStride: Int(i420Buffer.strideY),
+            uStride: Int(i420Buffer.strideU),
+            vStride: Int(i420Buffer.strideV),
             width: Int(i420Buffer.width),
             height: Int(i420Buffer.height),
             device: device)
@@ -1134,21 +1488,42 @@ extension MetalProcessor  {
             commandBuffer.waitUntilCompleted()
         }
         return rgbTexture
+        #endif
     }
     
     public func createMetalTexturesFromYUVPlanes(
         yData: UnsafePointer<UInt8>,
         uData: UnsafePointer<UInt8>,
         vData: UnsafePointer<UInt8>,
+        yStride: Int,
+        uStride: Int,
+        vStride: Int,
         width: Int,
         height: Int,
         device: MTLDevice
     ) throws -> I420Textures {
         
-        let bytesPerPixelY = 1
-        let bytesPerPixelUV = 1 // U and V are subsampled by a factor of 2 horizontally and vertically
-        let bytesPerRowY = bytesPerPixelY * width
-        let bytesPerRowUV = bytesPerPixelUV * (width / 2)
+        let chromaWidth = (width + 1) / 2
+        let chromaHeight = (height + 1) / 2
+        let bytesPerRowY = max(1, yStride)
+        let bytesPerRowU = max(1, uStride)
+        let bytesPerRowV = max(1, vStride)
+
+        if RemoteVideoTraceLogging.enabled, i420PlaneUploadLogCount < 10 {
+            i420PlaneUploadLogCount += 1
+            let rowSampleY = describePlaneRows(ptr: yData, stride: bytesPerRowY, rowCount: height, logicalWidth: width)
+            let rowSampleU = describePlaneRows(ptr: uData, stride: bytesPerRowU, rowCount: chromaHeight, logicalWidth: chromaWidth)
+            let rowSampleV = describePlaneRows(ptr: vData, stride: bytesPerRowV, rowCount: chromaHeight, logicalWidth: chromaWidth)
+            let traceLine = "[MetalProcessor] I420 upload #\(i420PlaneUploadLogCount) " +
+                "size=\(width)x\(height) chroma=\(chromaWidth)x\(chromaHeight) " +
+                "strides(y/u/v)=\(yStride)/\(uStride)/\(vStride) " +
+                "expected(y/u/v)=\(width)/\(chromaWidth)/\(chromaWidth) " +
+                "rowSampleY=\(rowSampleY) rowSampleU=\(rowSampleU) rowSampleV=\(rowSampleV)"
+            RemoteVideoTraceLogging.logger.log(
+                level: .trace,
+                message: Message(stringLiteral: traceLine)
+            )
+        }
         
         // Create Metal texture for Y component (luminance)
         let textureDescriptorY = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: width, height: height, mipmapped: false)
@@ -1162,31 +1537,75 @@ extension MetalProcessor  {
         yTexture.replace(region: regionY, mipmapLevel: 0, withBytes: yData, bytesPerRow: bytesPerRowY)
         
         // Create Metal texture for U component (chrominance)
-        let textureDescriptorU = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: width / 2, height: height / 2, mipmapped: false)
+        let textureDescriptorU = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: chromaWidth, height: chromaHeight, mipmapped: false)
         textureDescriptorU.usage = [.shaderRead, .shaderWrite]
         
         guard let uTexture = device.makeTexture(descriptor: textureDescriptorU) else {
             throw MetalScalingErrors.failedToCreateTextureCache
         }
         
-        let regionU = MTLRegionMake2D(0, 0, width / 2, height / 2)
-        uTexture.replace(region: regionU, mipmapLevel: 0, withBytes: uData, bytesPerRow: bytesPerRowUV)
+        let regionU = MTLRegionMake2D(0, 0, chromaWidth, chromaHeight)
+        uTexture.replace(region: regionU, mipmapLevel: 0, withBytes: uData, bytesPerRow: bytesPerRowU)
         
         // Create Metal texture for V component (chrominance)
-        let textureDescriptorV = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: width / 2, height: height / 2, mipmapped: false)
+        let textureDescriptorV = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: chromaWidth, height: chromaHeight, mipmapped: false)
         textureDescriptorV.usage = [.shaderRead, .shaderWrite]
         
         guard let vTexture = device.makeTexture(descriptor: textureDescriptorV) else {
             throw MetalScalingErrors.failedToCreateTextureCache
         }
         
-        let regionV = MTLRegionMake2D(0, 0, width / 2, height / 2)
-        vTexture.replace(region: regionV, mipmapLevel: 0, withBytes: vData, bytesPerRow: bytesPerRowUV)
+        let regionV = MTLRegionMake2D(0, 0, chromaWidth, chromaHeight)
+        vTexture.replace(region: regionV, mipmapLevel: 0, withBytes: vData, bytesPerRow: bytesPerRowV)
         
         return I420Textures(
             yTexture: yTexture,
             uTexture: uTexture,
             vTexture: vTexture)
+    }
+
+    private func describePlaneRows(
+        ptr: UnsafePointer<UInt8>,
+        stride: Int,
+        rowCount: Int,
+        logicalWidth: Int
+    ) -> String {
+        guard rowCount > 0, stride > 0, logicalWidth > 0 else { return "none" }
+        let rows = [0, rowCount / 2, max(0, rowCount - 1)]
+        var out: [String] = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            let rowPtr = ptr.advanced(by: row * stride)
+            let previewCount = min(8, logicalWidth)
+            let preview = previewRowBytes(rowPtr, count: previewCount)
+            let stats = sampleStats(rowPtr, count: min(logicalWidth, 64))
+            out.append("r\(row):\(preview) s=\(stats.min)/\(stats.max)/\(stats.avg)")
+        }
+        return out.joined(separator: " | ")
+    }
+
+    private func previewRowBytes(_ ptr: UnsafePointer<UInt8>, count: Int) -> String {
+        guard count > 0 else { return "[]" }
+        var values: [String] = []
+        values.reserveCapacity(count)
+        for i in 0..<count {
+            values.append(String(format: "%02x", ptr[i]))
+        }
+        return "[" + values.joined(separator: " ") + "]"
+    }
+
+    private func sampleStats(_ ptr: UnsafePointer<UInt8>, count: Int) -> (min: Int, max: Int, avg: Int) {
+        guard count > 0 else { return (0, 0, 0) }
+        var lo = Int.max
+        var hi = Int.min
+        var sum = 0
+        for i in 0..<count {
+            let value = Int(ptr[i])
+            lo = min(lo, value)
+            hi = max(hi, value)
+            sum += value
+        }
+        return (lo, hi, sum / count)
     }
     
 }
@@ -1542,7 +1961,6 @@ extension CVPixelBuffer {
         }
     }
 }
-
 
 extension MTLTexture {
     var bitsPerPixel: Int {

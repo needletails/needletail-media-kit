@@ -153,10 +153,9 @@ print("Processing time: \(duration)s")
 ```swift
 // Efficient error handling
 do {
-    let result = try await processor.process(data)
-} catch CompressionErrors.insufficientDiskSpace {
-    // Handle specific errors efficiently
-    cleanupTemporaryFiles()
+    let result = try await processor.resizeImage(imageData, to: targetSize)
+} catch ImageErrors.invalidImageData {
+    // Handle bad input data efficiently
 } catch {
     // Log and continue
     print("Processing failed: \(error)")
@@ -166,6 +165,6 @@ do {
 ## See Also
 
 - [Getting Started](GettingStarted.md) - Quick start guide
-- [API Reference](API_REFERENCE.md) - Complete API documentation
+- [API Reference](APIReference.md) - Complete API documentation
 - [MediaCompressor](MediaCompressor.md) - Video compression API
 - [ImageProcessor](ImageProcessor.md) - Image processing API 

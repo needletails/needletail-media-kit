@@ -3,7 +3,7 @@
 A high-performance media processing library for iOS and macOS with video compression, image processing, and GPU acceleration.
 
 [![Swift](https://img.shields.io/badge/Swift-6.0+-orange.svg)](https://swift.org)
-[![Platform](https://img.shields.io/badge/Platform-iOS%2016%2B%20%7C%20macOS%2013%2B-blue.svg)](https://developer.apple.com)
+[![Platform](https://img.shields.io/badge/Platform-iOS%2017%2B%20%7C%20macOS%2014%2B-blue.svg)](https://developer.apple.com)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## Features
@@ -16,9 +16,9 @@ A high-performance media processing library for iOS and macOS with video compres
 
 ## Requirements
 
-- iOS 16.0+ / macOS 13.0+
+- iOS 17.0+ / macOS 14.0+
 - Swift 6.0+
-- Xcode 15.0+
+- Xcode 16.0+
 
 ## Installation
 

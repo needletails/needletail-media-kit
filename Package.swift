@@ -19,7 +19,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://source.skip.tools/skip.git", from: "1.6.32"),
-        .package(url: "https://source.skip.tools/skip-foundation.git", from: "1.3.10")
+        .package(url: "https://source.skip.tools/skip-foundation.git", from: "1.3.10"),
+        .package(url: "https://github.com/needletails/needletail-logger.git", from: "3.1.5")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -27,7 +28,8 @@ let package = Package(
         .target(
             name: "NeedleTailMediaKit",
             dependencies: [
-                .product(name: "SkipFoundation", package: "skip-foundation")
+                .product(name: "SkipFoundation", package: "skip-foundation"),
+                .product(name: "NeedleTailLogger", package: "needletail-logger")
             ],
             resources: [
                 .process("MetalProcessor/Shaders/ImageShaders.metal"),
@@ -45,7 +47,8 @@ let package = Package(
     ]
 )
 
+
 #if os(iOS) || os(macOS) && !os(Android) && !os(Linux)
-package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "137.7151.11"))
+package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "144.7559.04"))
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "Specs"))
 #endif

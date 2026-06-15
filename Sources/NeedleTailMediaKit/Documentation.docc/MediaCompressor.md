@@ -56,32 +56,19 @@ let compressedURL = try await compressor.compressMedia(
 | `.resolution1920x1080` | 1920×1080 | ~8 Mbps | Standard HD |
 | `.resolution3840x2160` | 3840×2160 | ~25 Mbps | 4K UHD |
 
-## Progress Reporting
-
-Monitor compression progress for long-running operations:
-
-```swift
-for await progress in compressor.compressWithProgress(...) {
-    updateUI(progress: progress)
-}
-```
-
 ## Error Handling
 
 The MediaCompressor throws `CompressionErrors` for various failure scenarios:
 
 ```swift
 enum CompressionErrors: Error, Sendable {
-    case invalidInputURL
-    case unsupportedFileType
-    case compressionFailed(String)
-    case exportSessionCreationFailed
-    case exportSessionFailed(String)
-    case outputFileCreationFailed
-    case insufficientDiskSpace
-    case memoryAllocationFailed
+    case failedToCreateExportSession
+    case noVideoTrack
+    case unsupportedPlatform
 }
 ```
+
+On Apple platforms, `compressMedia` may also rethrow the underlying `AVAssetExportSession` error.
 
 ## Batch Processing
 
