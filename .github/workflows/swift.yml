@@ -222,4 +222,6 @@ jobs:
             ${{ runner.os }}-swift-
 
       - name: Test Android Robolectric
-        run: skip test --configuration release
+        env:
+          SKIP_GRADLE_VERBOSE: YES
+        run: swift test --configuration release --filter XCSkipTests
