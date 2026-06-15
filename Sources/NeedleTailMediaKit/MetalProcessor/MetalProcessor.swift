@@ -107,6 +107,8 @@ public actor MetalProcessor {
     private var i420PlaneUploadLogCount = 0
 
     var destinationBuffer = vImage_Buffer()
+    private var destinationBufferWidth = 0
+    private var destinationBufferHeight = 0
     var cgImageFormat = vImage_CGImageFormat(bitsPerComponent: 8,
                                                           bitsPerPixel: 32,
                                                           colorSpace: nil,
@@ -115,6 +117,10 @@ public actor MetalProcessor {
                                                           decode: nil,
                                                           renderingIntent: .defaultIntent)
     
+    public static var isSupported: Bool {
+        MTLCreateSystemDefaultDevice() != nil
+    }
+
     public init() {
         do {
             guard let device = MTLCreateSystemDefaultDevice() else {
@@ -239,7 +245,12 @@ public actor MetalProcessor {
         _ = pixelBuffer.metalPixelFormat
         var error = kvImageNoError
         
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else {
+            throw MetalScalingErrors.failedToLockPixelBuffer
+        }
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+        }
         
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -264,7 +275,10 @@ public actor MetalProcessor {
         )
         
         // Allocate the destination buffer (RGB)
-        if destinationBuffer.data == nil {
+        if destinationBuffer.data == nil || destinationBufferWidth != width || destinationBufferHeight != height {
+            if destinationBuffer.data != nil {
+                free(destinationBuffer.data)
+            }
             error = vImageBuffer_Init(&destinationBuffer,
                                       vImagePixelCount(height),
                                       vImagePixelCount(width),
@@ -274,6 +288,8 @@ public actor MetalProcessor {
             guard error == kvImageNoError else {
                 return nil
             }
+            destinationBufferWidth = width
+            destinationBufferHeight = height
         }
         
         // Temporary vImage buffer pointing to destination
@@ -338,7 +354,6 @@ public actor MetalProcessor {
             throw NSError(domain: "vImageBuffer_CopyToCVPixelBuffer failed", code: Int(error), userInfo: nil)
         }
 
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
         return outputPixelBuffer
     }
     
@@ -366,7 +381,7 @@ public actor MetalProcessor {
         }
         
         guard let pixelBuffer = pixelBuffer else {
-            fatalError("Always should procuce a pixel buffer")
+            throw MetalScalingErrors.failedToCreateOutputPixelBuffer
         }
         return pixelBuffer
     }

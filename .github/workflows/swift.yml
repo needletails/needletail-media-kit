@@ -1,4 +1,4 @@
-name: NeedleTailKit CI
+name: NeedleTailMediaKit CI
 
 on:
   push:
@@ -7,13 +7,16 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
+  swiftpm:
+    name: SwiftPM (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-          - os: macos-26
+          - name: Linux
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-26
             required_macos_major: '26'
             required_xcode_major: '26'
 
@@ -61,14 +64,14 @@ jobs:
           swift --version
           xcrun swift --version
 
-      - name: Install system dependencies
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+      - name: Install system dependencies (Linux)
+        if: ${{ runner.os == 'Linux' }}
         run: |
           sudo apt-get update
           sudo apt-get -y install libcurl4-openssl-dev
 
       - name: Install Swift 6.2.1 with Swiftly (Linux)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
+        if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: |
           curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz
@@ -77,16 +80,16 @@ jobs:
           source ~/.local/share/swiftly/env.sh
           swiftly install --use 6.2.1
           echo "Looking for Swift in toolchains directory..."
-          ls -la $HOME/.local/share/swiftly/toolchains/
-          SWIFT_PATH=$(find $HOME/.local/share/swiftly/toolchains/6.2.1 -name "swift" -type f 2>/dev/null | head -1)
+          ls -la "$HOME/.local/share/swiftly/toolchains/"
+          SWIFT_PATH=$(find "$HOME/.local/share/swiftly/toolchains/6.2.1" -name "swift" -type f 2>/dev/null | head -1)
           if [ -n "$SWIFT_PATH" ]; then
             SWIFT_PATH=$(dirname "$SWIFT_PATH")
           else
             echo "Swift not found in toolchains, using bin directory..."
-            SWIFT_PATH=$HOME/.local/share/swiftly/bin
+            SWIFT_PATH="$HOME/.local/share/swiftly/bin"
           fi
-          echo "SWIFT_PATH=$SWIFT_PATH" >> $GITHUB_ENV
-          echo "$SWIFT_PATH" >> $GITHUB_PATH
+          echo "SWIFT_PATH=$SWIFT_PATH" >> "$GITHUB_ENV"
+          echo "$SWIFT_PATH" >> "$GITHUB_PATH"
 
       - name: Install Skip.tools (macOS)
         if: ${{ runner.os == 'macOS' }}
@@ -98,16 +101,116 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-swift-${{ hashFiles('Package.swift') }}
+          key: ${{ runner.os }}-swift-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-swift-
-
-      - name: Xcode version (pre-build)
-        if: ${{ runner.os == 'macOS' }}
-        run: xcodebuild -version
 
       - name: Build
         run: swift build --configuration release
 
-      - name: Test
-        run: swift test --configuration release
+      - name: Test native SwiftPM
+        run: swift test --configuration release --skip XCSkipTests
+
+  ios-simulator:
+    name: iOS Simulator
+    runs-on: macos-26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Require Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
+          echo "$XCODE_VERSION_LINE"
+          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          if [[ "$XCODE_MAJOR" != "26" ]]; then
+            echo "Xcode 26 is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            exit 1
+          fi
+
+      - name: Install Skip.tools
+        run: |
+          brew install skiptools/skip/skip
+          skip version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-ios-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-ios-
+            ${{ runner.os }}-swift-
+
+      - name: Test iOS simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          DESTINATION=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{gsub(/^[ \t]+|[ \t]+$/, "", $1); print "platform=iOS Simulator,name="$1; exit}')
+          if [[ -z "$DESTINATION" ]]; then
+            echo "No available iPhone simulator found" >&2
+            exit 1
+          fi
+          echo "Using destination: $DESTINATION"
+          xcodebuild test \
+            -scheme NeedleTailMediaKit \
+            -destination "$DESTINATION" \
+            -skipPackagePluginValidation
+
+  android-robolectric:
+    name: Android Robolectric
+    runs-on: macos-26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Java version
+        run: java -version
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android compile SDK
+        run: sdkmanager --install "platforms;android-36"
+
+      - name: Require Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_VERSION_LINE=$(xcodebuild -version | head -n 1)
+          echo "$XCODE_VERSION_LINE"
+          XCODE_MAJOR=$(echo "$XCODE_VERSION_LINE" | awk '{print $2}' | cut -d. -f1)
+          if [[ "$XCODE_MAJOR" != "26" ]]; then
+            echo "Xcode 26 is required on this runner. Found: $XCODE_VERSION_LINE" >&2
+            exit 1
+          fi
+
+      - name: Install Skip.tools
+        run: |
+          brew install skiptools/skip/skip
+          skip version
+
+      - name: Cache Swift and Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-android-${{ hashFiles('Package.swift', 'Package.resolved', '**/skip.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-android-
+            ${{ runner.os }}-swift-
+
+      - name: Test Android Robolectric
+        run: skip test --configuration release

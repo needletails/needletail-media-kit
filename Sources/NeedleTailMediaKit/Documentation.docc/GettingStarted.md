@@ -10,8 +10,8 @@ This guide will help you get started with NeedleTail Media Kit, from installatio
 
 Before you begin, ensure you have:
 
-- **Xcode 15.0+** or **Swift 6.0+**
-- **iOS 16.0+** or **macOS 13.0+**
+- **Xcode 16.0+** or **Swift 6.0+**
+- **iOS 17.0+** or **macOS 14.0+**
 - **Metal-capable device** (A9+ for iOS, any modern Mac)
 
 ## Installation
@@ -64,20 +64,22 @@ let compressedURL = try await compressor.compressMedia(
 ```swift
 import NeedleTailMediaKit
 
-if #available(macOS 13.0, iOS 16.0, *) {
+if #available(macOS 14.0, iOS 17.0, *) {
     let processor = ImageProcessor()
     
     // Process image with multiple effects
-    let processedImage = try await processor
-        .resizeImage(imageData, to: CGSize(width: 800, height: 600))
-        .applyBlur(radius: 2.0)
-        .applySepia(intensity: 0.3)
+    let resizedImage = try await processor.resizeImage(
+        imageData,
+        to: CGSize(width: 800, height: 600)
+    )
+    let blurredImage = try await processor.applyBlur(to: resizedImage, radius: 2.0)
+    let processedImage = try await processor.applySepia(to: blurredImage, intensity: 0.3)
 }
 ```
 
 ## Next Steps
 
-- [Quick Start](QuickStart.md) - Learn more advanced usage patterns
+- [API Reference](APIReference.md) - Review the available APIs
 - [MediaCompressor](MediaCompressor.md) - Explore video compression capabilities
 - [ImageProcessor](ImageProcessor.md) - Discover image processing features
 - [Performance Optimization](PerformanceOptimization.md) - Optimize for production use 

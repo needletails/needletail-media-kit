@@ -90,16 +90,13 @@ The `MediaCompressor` throws `CompressionErrors` for various failure scenarios:
 
 ```swift
 enum CompressionErrors: Error, Sendable {
-    case invalidInputURL
-    case unsupportedFileType
-    case compressionFailed(String)
-    case exportSessionCreationFailed
-    case exportSessionFailed(String)
-    case outputFileCreationFailed
-    case insufficientDiskSpace
-    case memoryAllocationFailed
+    case failedToCreateExportSession
+    case noVideoTrack
+    case unsupportedPlatform
 }
 ```
+
+On Apple platforms, compression can also rethrow the underlying `AVAssetExportSession` error.
 
 ## ImageProcessor
 
@@ -108,7 +105,7 @@ The `ImageProcessor` actor provides high-performance image processing using Core
 ### Initialization
 
 ```swift
-@available(macOS 13.0, iOS 16.0, *)
+@available(macOS 14.0, iOS 17.0, *)
 public actor ImageProcessor {
     public init()
 }
@@ -261,8 +258,6 @@ enum ImageErrors: Error, Sendable {
     case imageProcessingFailed(String)
     case invalidImageData
     case unsupportedImageFormat
-    case filterApplicationFailed(String)
-    case memoryAllocationFailed
 }
 ```
 
@@ -274,6 +269,7 @@ The `MetalProcessor` actor provides GPU-accelerated image processing using Metal
 
 ```swift
 public actor MetalProcessor {
+    public static var isSupported: Bool
     public init()
 }
 ```
@@ -297,7 +293,7 @@ public func createTexture(
 
 **Returns:** The created Metal texture
 
-**Throws:** `MetalError` for texture creation failures
+**Throws:** An error when Metal cannot create a texture from the supplied pixel buffer
 
 **Example:**
 ```swift
@@ -325,7 +321,7 @@ public func convert2VUYToCVPixelBuffer(
 
 **Returns:** The converted RGB pixel buffer, or nil if conversion fails
 
-**Throws:** `MetalError` for conversion failures
+**Throws:** An error when conversion or pixel-buffer allocation fails
 
 **Example:**
 ```swift
@@ -337,20 +333,7 @@ let convertedBuffer = try await metalProcessor.convert2VUYToCVPixelBuffer(
 
 ### Error Handling
 
-The `MetalProcessor` throws `MetalError` for various failure scenarios:
-
-```swift
-enum MetalError: Error, Sendable {
-    case deviceNotAvailable
-    case textureCreationFailed
-    case shaderCompilationFailed(String)
-    case commandBufferCreationFailed
-    case conversionFailed(String)
-    case memoryAllocationFailed
-}
-```
-
-
+The `MetalProcessor` public methods throw processing errors when Metal resources, command buffers, textures, or pixel buffers cannot be created.
 
 ## Error Types
 
@@ -360,14 +343,9 @@ Errors that can occur during video compression operations.
 
 ```swift
 enum CompressionErrors: Error, Sendable {
-    case invalidInputURL
-    case unsupportedFileType
-    case compressionFailed(String)
-    case exportSessionCreationFailed
-    case exportSessionFailed(String)
-    case outputFileCreationFailed
-    case insufficientDiskSpace
-    case memoryAllocationFailed
+    case failedToCreateExportSession
+    case noVideoTrack
+    case unsupportedPlatform
 }
 ```
 
@@ -381,45 +359,26 @@ enum ImageErrors: Error, Sendable {
     case imageProcessingFailed(String)
     case invalidImageData
     case unsupportedImageFormat
-    case filterApplicationFailed(String)
-    case memoryAllocationFailed
-}
-```
-
-### MetalError
-
-Errors that can occur during Metal operations.
-
-```swift
-enum MetalError: Error, Sendable {
-    case deviceNotAvailable
-    case textureCreationFailed
-    case shaderCompilationFailed(String)
-    case commandBufferCreationFailed
-    case conversionFailed(String)
-    case memoryAllocationFailed
 }
 ```
 
 ## Extensions
 
-### CGSize Extension
+### CVPixelBuffer Extension
 
-Utility methods for CGSize operations.
+Convenience width and height accessors for pixel buffers.
 
 ```swift
-extension CGSize {
-    public func aspectRatio() -> CGFloat
-    public func scaled(to targetSize: CGSize) -> CGSize
-    public func fits(in containerSize: CGSize) -> Bool
+extension CVPixelBuffer {
+    var width: Int
+    var height: Int
 }
 ```
 
 **Example:**
 ```swift
-let size = CGSize(width: 1920, height: 1080)
-let aspectRatio = size.aspectRatio() // 16:9
-let scaledSize = size.scaled(to: CGSize(width: 800, height: 600))
+let width = pixelBuffer.width
+let height = pixelBuffer.height
 ```
 
 ### NSImage Extension
@@ -428,34 +387,38 @@ Utility methods for NSImage operations (macOS only).
 
 ```swift
 extension NSImage {
-    public func resized(to size: CGSize) -> NSImage?
-    public func dataRepresentation() -> Data?
+    public func resize(w: CGFloat, h: CGFloat) -> NSImage
+    public func pngData(size: CGSize) -> Data?
+    public func jpegData(maxSize: CGSize) -> Data?
+    public func stripped(type: ImageType) throws -> NSImage
+    public func thumbnailJPEGData(maxSide: CGFloat, compressionQuality: CGFloat) throws -> Data
 }
 ```
 
 **Example:**
 ```swift
-if let image = NSImage(named: "sample"),
-   let resized = image.resized(to: CGSize(width: 800, height: 600)) {
-    // Use resized image
+if let image = NSImage(named: "sample") {
+    let resized = image.resize(w: 800, h: 600)
+    let jpegData = try resized.thumbnailJPEGData(maxSide: 1024)
 }
 ```
 
-### UIView Extension
+### UIImage Extension
 
-Utility methods for UIView operations (iOS only).
+Utility methods for UIImage operations (iOS only).
 
 ```swift
-extension UIView {
-    public func snapshot() -> UIImage?
-    public func addBlurEffect(style: UIBlurEffect.Style)
+extension UIImage {
+    public func roundCorners(withRadius radius: CGFloat) -> UIImage
+    public func stripped(type: ImageType) throws -> UIImage
+    public func thumbnailJPEGData(maxSide: CGFloat, compressionQuality: CGFloat) throws -> Data
 }
 ```
 
 **Example:**
 ```swift
-let snapshot = view.snapshot()
-view.addBlurEffect(style: .systemMaterial)
+let stripped = try image.stripped(type: .jpg)
+let jpegData = try stripped.thumbnailJPEGData(maxSide: 1024)
 ```
 
 ## Configuration
@@ -536,15 +499,17 @@ do {
 ```swift
 import NeedleTailMediaKit
 
-if #available(macOS 13.0, iOS 16.0, *) {
+if #available(macOS 14.0, iOS 17.0, *) {
     let processor = ImageProcessor()
     
     do {
         // Process image with multiple effects
-        let processedData = try await processor
-            .resizeImage(imageData, to: CGSize(width: 800, height: 600))
-            .applyBlur(radius: 2.0)
-            .applySepia(intensity: 0.3)
+        let resizedData = try await processor.resizeImage(
+            imageData,
+            to: CGSize(width: 800, height: 600)
+        )
+        let blurredData = try await processor.applyBlur(to: resizedData, radius: 2.0)
+        let processedData = try await processor.applySepia(to: blurredData, intensity: 0.3)
         
         // Save processed image
         try processedData.write(to: outputURL)

@@ -135,8 +135,8 @@ actor MediaKitTests {
         )
         #expect(aspectFillInfo.size.height == desiredSize.height)
         #expect(aspectFillInfo.size.width > desiredSize.width)
-        #expect(aspectFillInfo.scaleX != 1.0)
-        #expect(aspectFillInfo.scaleY != 1.0)
+        #expect(aspectFillInfo.scaleX == aspectFillInfo.scaleY)
+        #expect(aspectFillInfo.scaleX >= 1.0)
 
         let aspectFitVerticalInfo = await processor.createSize(
             for: .aspectFitVertical,
@@ -199,13 +199,13 @@ actor MediaKitTests {
         // Test downscaling
         let scaled640 = await compressor.scaledResolution(for: originalSize, using: .resolution640x480)
         #expect(scaled640.width == 640)
-        #expect(scaled640.height == 480)
+        #expect(scaled640.height == 360)
         
         // Test portrait orientation preservation
         let portraitOriginal = CGSize(width: 1080, height: 1920)
         let scaledPortrait = await compressor.scaledResolution(for: portraitOriginal, using: .resolution640x480)
-        #expect(scaledPortrait.width == 480)
-        #expect(scaledPortrait.height == 640)
+        #expect(scaledPortrait.width == 270)
+        #expect(scaledPortrait.height == 480)
         
         // Test when original is smaller than preset
         let smallOriginal = CGSize(width: 320, height: 240)

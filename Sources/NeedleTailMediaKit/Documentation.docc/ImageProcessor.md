@@ -24,7 +24,7 @@ The `ImageProcessor` actor provides high-performance image processing using Core
 Create a new ImageProcessor instance:
 
 ```swift
-@available(macOS 13.0, iOS 16.0, *)
+@available(macOS 14.0, iOS 17.0, *)
 let processor = ImageProcessor()
 ```
 
@@ -88,14 +88,20 @@ let grayscaleData = try await processor.convertToGrayscale(imageData)
 
 ## Filter Pipeline
 
-Chain multiple operations together:
+Run multiple operations as a pipeline:
 
 ```swift
-let processedData = try await processor
-    .resizeImage(imageData, to: CGSize(width: 800, height: 600))
-    .applyBlur(radius: 2.0)
-    .applySepia(intensity: 0.3)
-    .adjustBrightnessContrast(brightness: 0.1, contrast: 1.2)
+let resizedData = try await processor.resizeImage(
+    imageData,
+    to: CGSize(width: 800, height: 600)
+)
+let blurredData = try await processor.applyBlur(to: resizedData, radius: 2.0)
+let sepiaData = try await processor.applySepia(to: blurredData, intensity: 0.3)
+let processedData = try await processor.adjustBrightnessContrast(
+    image: sepiaData,
+    brightness: 0.1,
+    contrast: 1.2
+)
 ```
 
 ## Batch Processing
@@ -124,21 +130,18 @@ enum ImageErrors: Error, Sendable {
     case imageProcessingFailed(String)
     case invalidImageData
     case unsupportedImageFormat
-    case filterApplicationFailed(String)
-    case memoryAllocationFailed
 }
 ```
 
 ## Performance Optimization
 
-### Filter Caching
+### Processor Reuse
 
-The ImageProcessor automatically caches CIFilter instances for improved performance:
+Reuse an `ImageProcessor` so its Core Image context can be reused across operations:
 
 ```swift
-// Filters are cached automatically
 let blur1 = try await processor.applyBlur(to: image1, radius: 5.0)
-let blur2 = try await processor.applyBlur(to: image2, radius: 5.0) // Uses cached filter
+let blur2 = try await processor.applyBlur(to: image2, radius: 5.0)
 ```
 
 ### Memory Management
@@ -147,7 +150,7 @@ Efficient memory management with automatic cleanup:
 
 ```swift
 // Memory is managed automatically
-let processed = try await processor.processLargeImage(largeImageData)
+let processed = try await processor.resizeImage(largeImageData, to: targetSize)
 // Memory is released automatically when processed goes out of scope
 ```
 

@@ -247,6 +247,6 @@ class ConfigurableMediaProcessor {
 ## See Also
 
 - [Getting Started](GettingStarted.md) - Quick start guide
-- [API Reference](API_REFERENCE.md) - Complete API documentation
+- [API Reference](APIReference.md) - Complete API documentation
 - [MediaCompressor](MediaCompressor.md) - Video compression API
 - [ImageProcessor](ImageProcessor.md) - Image processing API 

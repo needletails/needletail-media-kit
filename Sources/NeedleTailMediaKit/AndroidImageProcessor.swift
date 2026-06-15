@@ -47,10 +47,24 @@ public actor AndroidImageProcessor {
             throw ImageErrors.invalidImageData
         }
         
+        let originalWidth = bitmap.getWidth()
+        let originalHeight = bitmap.getHeight()
+        guard originalWidth > 0, originalHeight > 0 else {
+            throw ImageErrors.invalidImageData
+        }
+
+        let targetWidth = max(1, Int(targetSize.width))
+        let targetHeight = max(1, Int(targetSize.height))
+        let widthScale = Double(targetWidth) / Double(originalWidth)
+        let heightScale = Double(targetHeight) / Double(originalHeight)
+        let scale = min(widthScale, heightScale)
+        let outputWidth = max(1, Int(Double(originalWidth) * scale))
+        let outputHeight = max(1, Int(Double(originalHeight) * scale))
+
         let scaledBitmap = android.graphics.Bitmap.createScaledBitmap(
             bitmap,
-            Int(targetSize.width),
-            Int(targetSize.height),
+            outputWidth,
+            outputHeight,
             quality > 0 // Use filtering if quality > 0
         )
         
@@ -557,7 +571,7 @@ public actor AndroidImageProcessor {
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         
         let brightnessAdjustment = Int(brightness * 255.0)
-        let contrastFactor = (259.0 * (contrast * 255.0 + 255.0)) / (255.0 * (259.0 - contrast * 255.0))
+        let contrastFactor = max(Float(0.0), contrast)
         
         for i in 0..<pixels.size {
             let pixel = pixels[i]
