@@ -7,7 +7,12 @@ import CoreGraphics
 import ImageIO
 import CoreVideo
 import CoreMedia
+import CoreImage
 import Testing
+
+// Same pattern PQSRTC uses in production (PreviewViewRender.swift): CVPixelBuffer is passed
+// across actor boundaries by reference and treated as immutable once handed off.
+extension CVPixelBuffer: @retroactive @unchecked Sendable {}
 
 actor MediaKitTests {
     // MARK: - ImageProcessor Tests
@@ -188,6 +193,24 @@ actor MediaKitTests {
         #expect(portraitIntoLandscape.size.height > 390)
     }
 
+    @Test("MetalProcessor appearance softening preserves frame dimensions")
+    func testMetalProcessorAppearanceSofteningPreservesDimensions() async throws {
+        let processor = MetalProcessor()
+        let pixelBuffer = createTestNV12PixelBuffer(width: 128, height: 96)
+        let softened = try await processor.applyAppearanceSoftening(to: pixelBuffer)
+        #expect(CVPixelBufferGetWidth(softened) == 128)
+        #expect(CVPixelBufferGetHeight(softened) == 96)
+        #expect(CVPixelBufferGetPixelFormatType(softened) == CVPixelBufferGetPixelFormatType(pixelBuffer))
+    }
+
+    @Test("MetalProcessor appearance softening blend helper returns original at zero")
+    func testMetalProcessorAppearanceSofteningZeroBlend() async {
+        let input = CIImage(color: CIColor(red: 0.2, green: 0.4, blue: 0.6)).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let overlay = CIImage(color: CIColor(red: 1, green: 0, blue: 0)).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let blended = MetalProcessor.blendCIImages(base: input, overlay: overlay, amount: 0)
+        #expect(blended.extent == input.extent)
+    }
+
     // MARK: - MediaCompressor Tests
 
     @available(macOS 13.0, iOS 16.0, *)
@@ -277,6 +300,30 @@ actor MediaKitTests {
         CGImageDestinationAddImage(dest, cgImage, nil)
         CGImageDestinationFinalize(dest)
         return mutableData as Data
+    }
+
+    fileprivate func createTestNV12PixelBuffer(width: Int, height: Int) -> CVPixelBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            nil,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            fatalError("Failed to create test NV12 pixel buffer")
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        if let yPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) {
+            memset(yPlane, 128, CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) * height)
+        }
+        if let uvPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) {
+            memset(uvPlane, 128, CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1) * (height / 2))
+        }
+        return pixelBuffer
     }
 }
 #endif

@@ -54,7 +54,7 @@ public actor MetalProcessor {
         let metalCompatible: Bool
     }
     private var pixelBufferPoolCache: [PixelBufferPoolKey: CVPixelBufferPool] = [:]
-    private func pixelBufferPool(
+    func pixelBufferPool(
         pixelFormat: OSType,
         width: Int,
         height: Int,
