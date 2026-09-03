@@ -250,6 +250,22 @@ public actor AndroidImageProcessor {
         #endif
     }
 
+    /// Power-of-two `inSampleSize` that keeps the decoded bitmap near `maxSide`
+    /// without allocating a full-resolution buffer first.
+    public static func thumbnailDecodeSampleSize(width: Int, height: Int, maxSide: Int) -> Int {
+        let boundedMaxSide = max(maxSide, 1)
+        let sourceWidth = max(width, 0)
+        let sourceHeight = max(height, 0)
+        guard sourceWidth > 0, sourceHeight > 0 else { return 1 }
+        var sampleSize = 1
+        let halfWidth = sourceWidth / 2
+        let halfHeight = sourceHeight / 2
+        while (halfHeight / sampleSize) >= boundedMaxSide || (halfWidth / sampleSize) >= boundedMaxSide {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
     /// Decodes, optionally scales, and re-encodes JPEG without relying on EXIF stripping.
     public static func reencodeJPEG(
         imageData: Data,
@@ -261,10 +277,14 @@ public actor AndroidImageProcessor {
         guard byteArray.size > 0 else {
             throw ImageErrors.invalidImageData
         }
-        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        guard let bitmap = decodeSampledBitmap(byteArray, maxSide: maxSide) else {
             throw ImageErrors.invalidImageData
         }
-        return try encodeScaledJPEG(from: bitmap, maxSide: maxSide, compressionQuality: compressionQuality)
+        let jpeg = try encodeScaledJPEG(from: bitmap, maxSide: maxSide, compressionQuality: compressionQuality)
+        if bitmap.isRecycled() == false {
+            bitmap.recycle()
+        }
+        return jpeg
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
@@ -306,22 +326,45 @@ public actor AndroidImageProcessor {
         }
 
         let orientation = readEXIFOrientation(from: byteArray)
-        guard let bitmap = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size) else {
+        guard let bitmap = decodeSampledBitmap(byteArray, maxSide: maxSide) else {
             throw ImageErrors.invalidImageData
         }
 
         let orientedBitmap = applyOrientation(to: bitmap, orientation: orientation)
-        return try encodeScaledJPEG(
+        if orientedBitmap !== bitmap {
+            bitmap.recycle()
+        }
+        let jpeg = try encodeScaledJPEG(
             from: orientedBitmap,
             maxSide: maxSide,
             compressionQuality: compressionQuality
         )
+        if orientedBitmap.isRecycled() == false {
+            orientedBitmap.recycle()
+        }
+        return jpeg
         #else
         throw ImageErrors.unsupportedImageFormat
         #endif
     }
 
     #if SKIP
+    private static func decodeSampledBitmap(
+        _ byteArray: kotlin.ByteArray,
+        maxSide: Int
+    ) -> android.graphics.Bitmap? {
+        let bounds = android.graphics.BitmapFactory.Options()
+        bounds.inJustDecodeBounds = true
+        android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size, bounds)
+        let decodeOptions = android.graphics.BitmapFactory.Options()
+        decodeOptions.inSampleSize = thumbnailDecodeSampleSize(
+            width: bounds.outWidth,
+            height: bounds.outHeight,
+            maxSide: maxSide
+        )
+        return android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size, decodeOptions)
+    }
+
     private static func readEXIFOrientation(from byteArray: kotlin.ByteArray) -> Int {
         do {
             let inputStream = java.io.ByteArrayInputStream(byteArray)
@@ -389,6 +432,9 @@ public actor AndroidImageProcessor {
         let outputStream = java.io.ByteArrayOutputStream()
         let quality = Int(Swift.max(0.0, Swift.min(compressionQuality, 1.0)) * 100.0)
         let success = scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
+        if scaledBitmap !== sourceBitmap {
+            scaledBitmap.recycle()
+        }
         guard success else {
             throw ImageErrors.imageProcessingFailed("Failed to compress thumbnail to JPEG")
         }

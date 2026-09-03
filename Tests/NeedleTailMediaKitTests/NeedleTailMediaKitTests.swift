@@ -91,6 +91,27 @@ actor MediaKitTests {
         }
     }
 
+    @Test("ImageIO thumbnail caps the longest decoded side")
+    func testImageIOThumbnailCapsLongestSide() throws {
+        let source = createTestPNGData(width: 800, height: 400)
+        let thumbnail = try ImageIOThumbnail.createOrientedJPEG(
+            imageData: source,
+            maxSide: 200,
+            compressionQuality: 0.8
+        )
+        let imageSource = try #require(
+            CGImageSourceCreateWithData(thumbnail as CFData, nil)
+        )
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+        )
+        let width = try #require(properties[kCGImagePropertyPixelWidth] as? Int)
+        let height = try #require(properties[kCGImagePropertyPixelHeight] as? Int)
+        #expect(max(width, height) <= 200)
+        #expect(width == 200)
+        #expect(height == 100)
+    }
+
     @available(macOS 13.0, iOS 16.0, *)
     @Test("ImageProcessor supports concurrent operations")
     func testImageProcessorConcurrency() async throws {

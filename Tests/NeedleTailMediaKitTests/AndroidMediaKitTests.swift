@@ -30,6 +30,33 @@ final class AndroidMediaKitTests: XCTestCase {
         XCTAssertEqual("AndroidMediaKit", testData.testModuleName)
     }
 
+    func testThumbnailDecodeSampleSizeBoundsLargeSources() {
+        XCTAssertEqual(
+            AndroidImageProcessor.thumbnailDecodeSampleSize(
+                width: 4_032,
+                height: 3_024,
+                maxSide: 320
+            ),
+            8
+        )
+        XCTAssertEqual(
+            AndroidImageProcessor.thumbnailDecodeSampleSize(
+                width: 640,
+                height: 480,
+                maxSide: 320
+            ),
+            2
+        )
+        XCTAssertEqual(
+            AndroidImageProcessor.thumbnailDecodeSampleSize(
+                width: 319,
+                height: 240,
+                maxSide: 320
+            ),
+            1
+        )
+    }
+
     // MARK: - ImageProcessor Tests (Android)
     // NOTE:
     // - The ImageProcessor Android implementation relies on Android Bitmap APIs via Skip transpilation.
