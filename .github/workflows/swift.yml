@@ -186,8 +186,11 @@ jobs:
       - name: Java version
         run: java -version
 
+      # Default packages include obsolete `tools`, which sdkmanager no longer ships.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android compile SDK
         run: sdkmanager --install "platforms;android-36"
