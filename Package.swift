@@ -11,10 +11,14 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
+        // Default automatic (static) product so dependents like nudge-kit can
+        // `swift test` without SPM duplicate-symbol failures:
+        //   NeedleTailLogger-product / Logging-product linked by both
+        //   NudgeKitTests-product and NeedleTailMediaKit-product.
+        // Skip Android needs a dylib; flip to .dynamic only when SKIP_BRIDGE=1
+        // (same pattern as pqs-rtc).
         .library(
             name: "NeedleTailMediaKit",
-            type: .dynamic,
             targets: ["NeedleTailMediaKit"]),
     ],
     dependencies: [
@@ -52,3 +56,14 @@ let package = Package(
 package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "144.7559.04"))
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "Specs"))
 #endif
+
+let skipBridge = (Context.environment["SKIP_BRIDGE"] ?? "0") != "0"
+if skipBridge {
+    package.products = package.products.map { product in
+        guard let libraryProduct = product as? Product.Library else { return product }
+        return .library(
+            name: libraryProduct.name,
+            type: .dynamic,
+            targets: libraryProduct.targets)
+    }
+}
