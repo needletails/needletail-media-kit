@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.4
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -7,8 +7,8 @@ let package = Package(
     name: "NeedleTailMediaKit",
     defaultLocalization: "en",
     platforms: [
-        .macOS(.v14),
-        .iOS(.v17),
+        .macOS("26.0"),
+        .iOS("26.0"),
     ],
     products: [
         // Default automatic (static) product so dependents like nudge-kit can
@@ -53,7 +53,7 @@ let package = Package(
 
 
 #if os(iOS) || os(macOS) && !os(Android) && !os(Linux)
-package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "144.7559.04"))
+package.dependencies.append(.package(url: "https://github.com/needletails/Specs.git", from: "150.7871.01"))
 package.targets.first(where: { $0.name == "NeedleTailMediaKit" })?.dependencies.append(.product(name: "WebRTC", package: "Specs"))
 #endif
 
