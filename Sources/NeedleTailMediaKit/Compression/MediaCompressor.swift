@@ -272,8 +272,7 @@ public actor MediaCompressor {
             for: asset,
             using: videoTrack,
             targetSize: targetSize)
-        
-        videoComposition.renderSize = targetSize
+
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: presetName.rawValue) else {
             throw CompressionErrors.failedToCreateExportSession
         }
@@ -282,20 +281,9 @@ public actor MediaCompressor {
         //Strip Metadata
         exportSession.metadata = []
         exportSession.metadataItemFilter = .forSharing()
-        
-        // Start the export process
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = outputFileType
-        
-        await exportSession.export()
-        
-        if exportSession.status == .completed {
-            return outputURL
-        } else if let error = exportSession.error {
-            throw error
-        } else {
-            throw CompressionErrors.failedToCreateExportSession
-        }
+
+        try await exportSession.export(to: outputURL, as: outputFileType)
+        return outputURL
         #else
         throw CompressionErrors.unsupportedPlatform
         #endif
@@ -329,21 +317,12 @@ public actor MediaCompressor {
             throw CompressionErrors.failedToCreateExportSession
         }
 
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = outputFileType
         exportSession.shouldOptimizeForNetworkUse = true
         exportSession.metadata = []
         exportSession.metadataItemFilter = .forSharing()
 
-        await exportSession.export()
-
-        if exportSession.status == .completed {
-            return outputURL
-        } else if let error = exportSession.error {
-            throw error
-        } else {
-            throw CompressionErrors.failedToCreateExportSession
-        }
+        try await exportSession.export(to: outputURL, as: outputFileType)
+        return outputURL
         #else
         throw CompressionErrors.unsupportedPlatform
         #endif
@@ -400,23 +379,24 @@ public actor MediaCompressor {
         for asset: AVAsset,
         using track: AVAssetTrack,
         targetSize: CGSize
-    ) async throws -> AVMutableVideoComposition {
+    ) async throws -> AVVideoComposition {
         // CIContext is thread-safe; create once per composition rather than letting AVFoundation
         // pick an implicit context each frame.
         let ciContext = CIContext(options: [.cacheIntermediates: false])
-        return try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-            // request.sourceImage already represents the frame AVFoundation is providing for composition.
-            // Normalize to origin and fit into the target canvas to avoid sideways/double-transform artifacts.
-            let sourceExtent = request.sourceImage.extent
+        let filtered = try await AVVideoComposition(applyingFiltersTo: asset) { parameters in
+            // sourceImage is the frame AVFoundation is providing. Normalize to origin and fit the
+            // composition canvas to avoid sideways/double-transform artifacts.
+            let canvasSize = parameters.renderSize
+            let sourceExtent = parameters.sourceImage.extent
             let originCorrection = CGAffineTransform(translationX: -sourceExtent.origin.x, y: -sourceExtent.origin.y)
-            let normalizedImage = request.sourceImage.transformed(by: originCorrection)
+            let normalizedImage = parameters.sourceImage.transformed(by: originCorrection)
             let normalizedExtent = normalizedImage.extent
             let originalSize = CGSize(width: normalizedExtent.width, height: normalizedExtent.height)
             
             // Calculate scale factors along each axis and choose the lesser value
             // This maintains the original aspect ratio.
-            let scaleX = targetSize.width / originalSize.width
-            let scaleY = targetSize.height / originalSize.height
+            let scaleX = canvasSize.width / originalSize.width
+            let scaleY = canvasSize.height / originalSize.height
             let scaleFactor = min(scaleX, scaleY)
             
             let scaleFilter = CIFilter.lanczosScaleTransform()
@@ -425,8 +405,7 @@ public actor MediaCompressor {
             scaleFilter.aspectRatio = 1.0 // Lock aspect ratio
             
             guard let scaledImage = scaleFilter.outputImage else {
-                request.finish(with: CIImage(), context: ciContext)
-                return
+                return AVCIImageFilteringResult(resultImage: CIImage(), ciContext: ciContext)
             }
             
             // Compute new dimensions after scaling.
@@ -434,19 +413,36 @@ public actor MediaCompressor {
             let scaledHeight = originalSize.height * scaleFactor
             
             // Center the scaled image within the adjusted target size.
-            let xOffset = (targetSize.width - scaledWidth) / 2.0
-            let yOffset = (targetSize.height - scaledHeight) / 2.0
+            let xOffset = (canvasSize.width - scaledWidth) / 2.0
+            let yOffset = (canvasSize.height - scaledHeight) / 2.0
             let centeringTransform = CGAffineTransform(translationX: xOffset, y: yOffset)
             let centeredImage = scaledImage.transformed(by: centeringTransform)
             
             // Explicitly fill letterbox regions with black to avoid green/garbled padding on some decoders.
-            let canvasRect = CGRect(origin: .zero, size: targetSize)
+            let canvasRect = CGRect(origin: .zero, size: canvasSize)
             let blackBackground = CIImage(color: CIColor.black).cropped(to: canvasRect)
             let outputImage = centeredImage.composited(over: blackBackground).cropped(to: canvasRect)
-            
-            // Provide the final composed image to finish the request.
-            request.finish(with: outputImage, context: ciContext)
+            return AVCIImageFilteringResult(resultImage: outputImage, ciContext: ciContext)
         }
+
+        // The filter composition renders at the source size. Rebuild it so the export canvas is the
+        // scaled target while the Core Image applier stays attached.
+        let configuration = AVVideoComposition.Configuration(
+            colorPrimaries: filtered.colorPrimaries,
+            colorTransferFunction: filtered.colorTransferFunction,
+            colorYCbCrMatrix: filtered.colorYCbCrMatrix,
+            customVideoCompositorClass: filtered.customVideoCompositorClass,
+            frameDuration: filtered.frameDuration,
+            instructions: filtered.instructions,
+            outputBufferDescription: filtered.outputBufferDescription,
+            perFrameHDRDisplayMetadataPolicy: filtered.perFrameHDRDisplayMetadataPolicy,
+            renderScale: filtered.renderScale,
+            renderSize: targetSize,
+            sourceSampleDataTrackIDs: filtered.sourceSampleDataTrackIDs,
+            sourceTrackIDForFrameTiming: filtered.sourceTrackIDForFrameTiming,
+            spatialVideoConfigurations: filtered.spatialVideoConfigurations
+        )
+        return AVVideoComposition(configuration: configuration)
     }
     #endif
 }
