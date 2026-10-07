@@ -1687,8 +1687,8 @@ extension MetalProcessor {
         desiredSize: CGSize
     ) async throws -> MTLTexture {
         let originalSize = image.size
-        let aspectRatio = await getAspectRatio(width: originalSize.width, height: originalSize.height)
-        let info = await createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
+        let aspectRatio =  getAspectRatio(width: originalSize.width, height: originalSize.height)
+        let info =  createSize(for: .aspectFill, originalSize: originalSize, desiredSize: desiredSize, aspectRatio: aspectRatio)
         let textureInfo = try await resizeImage(
             image: image,
             parentBounds: info.size,
